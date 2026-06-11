@@ -94,3 +94,175 @@ def send_invite_email(to_email: str, full_name: str, invite_token: str, organisa
             status_code=500,
             detail=f"Failed to send invitation email: {str(e)}"
         )
+
+def send_otp_email(to_email: str, full_name: str, otp: str, org_name: str) -> None:
+    """Sends a registration OTP verification email using the Resend Python SDK.
+    If sending fails, logs the error and raises an HTTPException.
+    """
+    resend.api_key = settings.RESEND_API_KEY
+    first_name = full_name.split()[0] if full_name else "User"
+
+    if settings.RESEND_API_KEY == "API_KEY" or not settings.RESEND_API_KEY:
+        logger.warning(f"[DEVELOPMENT] Resend API key is not configured. Registration OTP email not sent. to={to_email}, otp={otp}")
+        return
+
+    html_content = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="utf-8">
+        <title>Your verification code for RAG Vault</title>
+        <style>
+            body {{
+                font-family: Arial, sans-serif;
+                background-color: #f3f4f6;
+                padding: 20px;
+                margin: 0;
+            }}
+            .card {{
+                max-width: 600px;
+                margin: 0 auto;
+                background: #ffffff;
+                padding: 30px;
+                border-radius: 8px;
+                box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1), 0 2px 4px -1px rgba(0,0,0,0.06);
+            }}
+            .otp-box {{
+                font-size: 36px;
+                font-weight: bold;
+                text-align: center;
+                letter-spacing: 8px;
+                margin: 30px 0;
+                padding: 15px;
+                background-color: #f9fafb;
+                border: 1px dashed #d1d5db;
+                border-radius: 6px;
+                color: #111827;
+            }}
+            .footer {{
+                font-size: 0.875rem;
+                color: #6b7280;
+                margin-top: 20px;
+                border-top: 1px solid #e5e7eb;
+                padding-top: 15px;
+            }}
+        </style>
+    </head>
+    <body>
+        <div class="card">
+            <h2>Your Verification Code</h2>
+            <p>Hello {first_name},</p>
+            <p>Thank you for registering. Please use the following 6-digit verification code to complete your registration for <strong>{org_name}</strong>:</p>
+            
+            <div class="otp-box">{otp}</div>
+            
+            <p>This code is valid for <strong>10 minutes</strong>. If you did not request this, you can safely ignore this email.</p>
+            
+            <div class="footer">
+                This is an automated message. Please do not reply directly to this email.
+            </div>
+        </div>
+    </body>
+    </html>
+    """
+
+    try:
+        params = {
+            "from": "onboarding@resend.dev",
+            "to": to_email,
+            "subject": "Your verification code for RAG Vault",
+            "html": html_content
+        }
+        resend.Emails.send(params)
+    except Exception as e:
+        logger.error(f"Failed to send OTP email to {to_email}: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to send OTP email: {str(e)}"
+        )
+
+def send_forgot_password_otp_email(to_email: str, full_name: str, otp: str) -> None:
+    """Sends a forgot password OTP email using the Resend Python SDK.
+    If sending fails, logs the error and raises an HTTPException.
+    """
+    resend.api_key = settings.RESEND_API_KEY
+    first_name = full_name.split()[0] if full_name else "User"
+
+    if settings.RESEND_API_KEY == "API_KEY" or not settings.RESEND_API_KEY:
+        logger.warning(f"[DEVELOPMENT] Resend API key is not configured. Forgot password OTP email not sent. to={to_email}, otp={otp}")
+        return
+
+    html_content = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="utf-8">
+        <title>Reset your RAG Vault password</title>
+        <style>
+            body {{
+                font-family: Arial, sans-serif;
+                background-color: #f3f4f6;
+                padding: 20px;
+                margin: 0;
+            }}
+            .card {{
+                max-width: 600px;
+                margin: 0 auto;
+                background: #ffffff;
+                padding: 30px;
+                border-radius: 8px;
+                box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1), 0 2px 4px -1px rgba(0,0,0,0.06);
+            }}
+            .otp-box {{
+                font-size: 36px;
+                font-weight: bold;
+                text-align: center;
+                letter-spacing: 8px;
+                margin: 30px 0;
+                padding: 15px;
+                background-color: #f9fafb;
+                border: 1px dashed #d1d5db;
+                border-radius: 6px;
+                color: #111827;
+            }}
+            .footer {{
+                font-size: 0.875rem;
+                color: #6b7280;
+                margin-top: 20px;
+                border-top: 1px solid #e5e7eb;
+                padding-top: 15px;
+            }}
+        </style>
+    </head>
+    <body>
+        <div class="card">
+            <h2>Reset Your Password</h2>
+            <p>Hello {first_name},</p>
+            <p>A password reset was requested for your RAG Vault account. Please use the following 6-digit verification code to reset your password:</p>
+            
+            <div class="otp-box">{otp}</div>
+            
+            <p>This code is valid for <strong>10 minutes</strong>. If you did not request this, you should ignore this email and your password will not be changed.</p>
+            
+            <div class="footer">
+                This is an automated message. Please do not reply directly to this email.
+            </div>
+        </div>
+    </body>
+    </html>
+    """
+
+    try:
+        params = {
+            "from": "onboarding@resend.dev",
+            "to": to_email,
+            "subject": "Reset your RAG Vault password",
+            "html": html_content
+        }
+        resend.Emails.send(params)
+    except Exception as e:
+        logger.error(f"Failed to send forgot password email to {to_email}: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to send forgot password email: {str(e)}"
+        )

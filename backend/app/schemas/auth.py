@@ -1,13 +1,40 @@
-from pydantic import BaseModel, EmailStr, Field, field_validator
+from pydantic import BaseModel, EmailStr, Field, field_validator, HttpUrl, model_validator
 from uuid import UUID
 from datetime import datetime
 from app.models.enums import UserRole
 
-class AdminRegisterRequest(BaseModel):
-    full_name: str
+class RegistrationInitRequest(BaseModel):
+    org_name: str = Field(..., min_length=2)
+    org_website: HttpUrl
+    full_name: str = Field(..., min_length=2)
     email: EmailStr
     password: str = Field(..., min_length=8)
-    organisation_name: str
+    confirm_password: str = Field(..., min_length=8)
+
+    @model_validator(mode="after")
+    def validate_passwords(self) -> 'RegistrationInitRequest':
+        if self.password != self.confirm_password:
+            raise ValueError("Passwords do not match")
+        return self
+
+class VerifyRegistrationOTPRequest(BaseModel):
+    email: EmailStr
+    otp: str = Field(..., min_length=6, max_length=6)
+
+class ForgotPasswordRequest(BaseModel):
+    email: EmailStr
+
+class ResetPasswordRequest(BaseModel):
+    email: EmailStr
+    otp: str = Field(..., min_length=6, max_length=6)
+    new_password: str = Field(..., min_length=8)
+    confirm_password: str = Field(..., min_length=8)
+
+    @model_validator(mode="after")
+    def validate_passwords(self) -> 'ResetPasswordRequest':
+        if self.new_password != self.confirm_password:
+            raise ValueError("Passwords do not match")
+        return self
 
 class LoginRequest(BaseModel):
     email: EmailStr

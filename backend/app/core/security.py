@@ -49,3 +49,17 @@ def decode_access_token(token: str) -> dict | None:
 def hash_token(token: str) -> str:
     """Returns SHA-256 hash of a raw token string."""
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+def generate_otp() -> tuple[str, str]:
+    """Generates a cryptographically secure 6-digit numeric OTP and its SHA-256 hash."""
+    otp_int = secrets.randbelow(1000000)
+    raw_otp = str(otp_int).zfill(6)
+    otp_hash = hashlib.sha256(raw_otp.encode("utf-8")).hexdigest()
+    return raw_otp, otp_hash
+
+def verify_otp(raw_otp: str, otp_hash: str) -> bool:
+    """Hashes the raw OTP using SHA-256 and compares it to the stored hash."""
+    if not raw_otp:
+        return False
+    computed_hash = hashlib.sha256(raw_otp.encode("utf-8")).hexdigest()
+    return secrets.compare_digest(computed_hash, otp_hash)

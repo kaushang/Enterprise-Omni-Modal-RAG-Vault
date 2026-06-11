@@ -1,5 +1,7 @@
 from datetime import datetime, timedelta, timezone
 import secrets
+import re
+import random
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from sqlalchemy.orm import Session
 from app.db.session import get_db
@@ -9,65 +11,350 @@ from app.core.security import (
     verify_password,
     create_access_token,
     create_refresh_token,
-    hash_token
+    hash_token,
+    generate_otp,
+    verify_otp
 )
 from app.core.dependencies import get_current_user, require_admin
 from app.models.user import User
 from app.models.tenant import Tenant
 from app.models.refresh_token import RefreshToken
 from app.models.invite_token import InviteToken
-from app.models.enums import UserRole
+from app.models.otp_verification import OTPVerification
+from app.models.enums import UserRole, OTPPurpose
 from app.schemas.auth import (
-    AdminRegisterRequest,
+    RegistrationInitRequest,
+    VerifyRegistrationOTPRequest,
+    ForgotPasswordRequest,
+    ResetPasswordRequest,
     LoginRequest,
     AcceptInviteRequest,
     UserResponse,
     InviteMemberRequest,
     MessageResponse
 )
-from app.services.email_service import send_invite_email
+from app.services.email_service import (
+    send_invite_email,
+    send_otp_email,
+    send_forgot_password_otp_email
+)
+from itsdangerous import URLSafeTimedSerializer, SignatureExpired, BadSignature
 
 router = APIRouter()
 
-@router.post("/register", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
-def register(request: AdminRegisterRequest, db: Session = Depends(get_db)):
-    """Open route to register an admin user and create a new tenant in a single transaction."""
+serializer = URLSafeTimedSerializer(settings.SECRET_KEY)
+
+@router.post("/register/init", response_model=MessageResponse)
+def register_init(
+    request: RegistrationInitRequest,
+    response: Response,
+    db: Session = Depends(get_db)
+):
+    """Open route to initiate registration. Generates and sends OTP, and sets temporary signed cookie."""
     existing_user = db.query(User).filter(User.email == request.email).first()
     if existing_user:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Email already exists"
+            detail="An account with this email already exists"
         )
-        
+
     try:
-        # Generate slug by lowercasing and replacing spaces with hyphens
-        slug = request.organisation_name.lower().replace(" ", "-")
-        
-        tenant = Tenant(
-            name=request.organisation_name,
-            slug=slug
+        db.query(OTPVerification).filter(
+            OTPVerification.email == request.email,
+            OTPVerification.purpose == OTPPurpose.registration,
+            OTPVerification.is_used == False
+        ).delete()
+
+        hashed_password = hash_password(request.password)
+        raw_otp, otp_hash = generate_otp()
+
+        cookie_payload = {
+            "org_name": request.org_name,
+            "org_website": str(request.org_website),
+            "full_name": request.full_name,
+            "email": request.email,
+            "hashed_password": hashed_password
+        }
+        signed_cookie_value = serializer.dumps(cookie_payload)
+
+        response.set_cookie(
+            key="registration_session",
+            value=signed_cookie_value,
+            max_age=600,
+            httponly=True,
+            samesite="lax",
+            secure=False
         )
-        db.add(tenant)
-        db.flush()  # Obtain tenant.id
-        
-        user = User(
-            tenant_id=tenant.id,
+
+        expires_at = datetime.now(timezone.utc) + timedelta(minutes=10)
+        otp_record = OTPVerification(
             email=request.email,
-            full_name=request.full_name,
-            hashed_password=hash_password(request.password),
-            role=UserRole.admin,
-            is_active=True
+            otp_hash=otp_hash,
+            purpose=OTPPurpose.registration,
+            expires_at=expires_at,
+            is_used=False
         )
-        db.add(user)
+        db.add(otp_record)
         db.commit()
-        db.refresh(user)
-        return user
+
+        send_otp_email(
+            to_email=request.email,
+            full_name=request.full_name,
+            otp=raw_otp,
+            org_name=request.org_name
+        )
+
+        return {"message": "OTP sent to your email. Please verify to complete registration."}
+    except HTTPException as he:
+        db.rollback()
+        raise he
     except Exception as e:
         db.rollback()
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(e)
         )
+
+@router.post("/register/verify-otp", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
+def register_verify_otp(
+    request: VerifyRegistrationOTPRequest,
+    req_obj: Request,
+    response: Response,
+    db: Session = Depends(get_db)
+):
+    """Open route to verify registration OTP and finalize user and tenant creation."""
+    cookie_value = req_obj.cookies.get("registration_session")
+    if not cookie_value:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Registration session expired. Please start again."
+        )
+
+    try:
+        payload = serializer.loads(cookie_value, max_age=600)
+    except (SignatureExpired, BadSignature):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Registration session expired. Please start again."
+        )
+
+    if payload.get("email") != request.email:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid or expired OTP"
+        )
+
+    otp_record = db.query(OTPVerification).filter(
+        OTPVerification.email == request.email,
+        OTPVerification.purpose == OTPPurpose.registration,
+        OTPVerification.is_used == False
+    ).order_by(OTPVerification.created_at.desc()).first()
+
+    if not otp_record:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid or expired OTP"
+        )
+
+    current_time = datetime.now(timezone.utc)
+    expires_at = otp_record.expires_at
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+
+    if expires_at < current_time:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid or expired OTP"
+        )
+
+    if not verify_otp(request.otp, otp_record.otp_hash):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid or expired OTP"
+        )
+
+    try:
+        org_name = payload["org_name"]
+        base_slug = re.sub(r'[^a-z0-9\-]', '', org_name.lower().replace(" ", "-"))
+        slug = base_slug or "tenant"
+        while db.query(Tenant).filter(Tenant.slug == slug).first():
+            slug = f"{base_slug}-{random.randint(1000, 9999)}"
+
+        tenant = Tenant(
+            name=org_name,
+            slug=slug
+        )
+        db.add(tenant)
+        db.flush()
+
+        user = User(
+            tenant_id=tenant.id,
+            email=payload["email"],
+            full_name=payload["full_name"],
+            hashed_password=payload["hashed_password"],
+            role=UserRole.admin,
+            is_active=True
+        )
+        db.add(user)
+
+        db.delete(otp_record)
+        db.commit()
+        db.refresh(user)
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+
+    access_token = create_access_token({
+        "sub": str(user.id),
+        "tenant_id": str(user.tenant_id),
+        "role": user.role.value
+    })
+    raw_refresh_token, hashed_refresh_token = create_refresh_token()
+
+    refresh_expires_at = datetime.now(timezone.utc) + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)
+    db_refresh_token = RefreshToken(
+        user_id=user.id,
+        token_hash=hashed_refresh_token,
+        expires_at=refresh_expires_at,
+        is_revoked=False
+    )
+    db.add(db_refresh_token)
+    db.commit()
+
+    response.set_cookie(
+        key="access_token",
+        value=access_token,
+        max_age=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+        httponly=True,
+        samesite="lax",
+        secure=False
+    )
+    response.set_cookie(
+        key="refresh_token",
+        value=raw_refresh_token,
+        max_age=settings.REFRESH_TOKEN_EXPIRE_DAYS * 24 * 60 * 60,
+        httponly=True,
+        samesite="lax",
+        secure=False
+    )
+
+    response.delete_cookie("registration_session")
+    return user
+
+@router.post("/forgot-password", response_model=MessageResponse)
+def forgot_password_route(
+    request: ForgotPasswordRequest,
+    db: Session = Depends(get_db)
+):
+    """Open route to request a password reset OTP."""
+    generic_response = {"message": "If an account with this email exists, an OTP has been sent."}
+    
+    user = db.query(User).filter(User.email == request.email).first()
+    if not user:
+        return generic_response
+        
+    if not user.is_active:
+        return generic_response
+        
+    try:
+        db.query(OTPVerification).filter(
+            OTPVerification.email == request.email,
+            OTPVerification.purpose == OTPPurpose.forgot_password,
+            OTPVerification.is_used == False
+        ).delete()
+        
+        raw_otp, otp_hash = generate_otp()
+        
+        expires_at = datetime.now(timezone.utc) + timedelta(minutes=10)
+        otp_record = OTPVerification(
+            email=request.email,
+            otp_hash=otp_hash,
+            purpose=OTPPurpose.forgot_password,
+            expires_at=expires_at,
+            is_used=False
+        )
+        db.add(otp_record)
+        db.commit()
+        
+        send_forgot_password_otp_email(
+            to_email=request.email,
+            full_name=user.full_name,
+            otp=raw_otp
+        )
+    except HTTPException as he:
+        db.rollback()
+        raise he
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"An error occurred: {str(e)}"
+        )
+        
+    return generic_response
+
+@router.post("/reset-password", response_model=MessageResponse)
+def reset_password_route(
+    request: ResetPasswordRequest,
+    db: Session = Depends(get_db)
+):
+    """Open route to reset password using verification OTP."""
+    otp_record = db.query(OTPVerification).filter(
+        OTPVerification.email == request.email,
+        OTPVerification.purpose == OTPPurpose.forgot_password,
+        OTPVerification.is_used == False
+    ).order_by(OTPVerification.created_at.desc()).first()
+    
+    if not otp_record:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid or expired OTP"
+        )
+        
+    current_time = datetime.now(timezone.utc)
+    expires_at = otp_record.expires_at
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+        
+    if expires_at < current_time:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid or expired OTP"
+        )
+        
+    if not verify_otp(request.otp, otp_record.otp_hash):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid or expired OTP"
+        )
+        
+    user = db.query(User).filter(User.email == request.email).first()
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid or expired OTP"
+        )
+        
+    try:
+        user.hashed_password = hash_password(request.new_password)
+        db.delete(otp_record)
+        
+        db.query(RefreshToken).filter(
+            RefreshToken.user_id == user.id
+        ).update({RefreshToken.is_revoked: True})
+        
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+        
+    return {"message": "Password reset successfully. Please log in with your new password."}
 
 @router.post("/login", response_model=UserResponse)
 def login(request: LoginRequest, response: Response, db: Session = Depends(get_db)):
