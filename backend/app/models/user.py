@@ -32,3 +32,4 @@ class User(Base):
     documents: Mapped[list["Document"]] = relationship("Document", back_populates="uploader", cascade="all, delete-orphan")
     query_sessions: Mapped[list["QuerySession"]] = relationship("QuerySession", back_populates="user", cascade="all, delete-orphan")
     refresh_tokens: Mapped[list["RefreshToken"]] = relationship("RefreshToken", back_populates="user", cascade="all, delete-orphan")
+    invite_tokens: Mapped[list["InviteToken"]] = relationship("InviteToken", back_populates="user", cascade="all, delete-orphan")

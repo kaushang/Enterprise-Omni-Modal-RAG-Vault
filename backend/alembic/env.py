@@ -13,6 +13,17 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from app.core.config import settings
 from app.db.base import Base
 
+# Import all models here so that Alembic can detect them via Base.metadata
+from app.models.tenant import Tenant
+from app.models.user import User
+from app.models.document import Document
+from app.models.document_access_policy import DocumentAccessPolicy
+from app.models.query_session import QuerySession
+from app.models.query_message import QueryMessage
+from app.models.query_citation import QueryCitation
+from app.models.refresh_token import RefreshToken
+from app.models.invite_token import InviteToken
+
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
 config = context.config

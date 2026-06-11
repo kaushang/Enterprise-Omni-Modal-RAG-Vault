@@ -12,6 +12,8 @@ class Settings(BaseSettings):
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
     ALGORITHM: str = "HS256"
     APP_ENV: str = "development"
+    RESEND_API_KEY: str = "re_YuPvPF1Q_D896vzzUHrrqzmcE1wFqPDju"
+    FRONTEND_URL: str
 
     model_config = SettingsConfigDict(
         env_file=".env",
