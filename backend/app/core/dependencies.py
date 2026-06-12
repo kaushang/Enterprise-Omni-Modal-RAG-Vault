@@ -1,10 +1,9 @@
 import uuid
 from fastapi import Depends, HTTPException, Request, status
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from app.db.session import get_db
 from app.core.security import decode_access_token
 from app.models.user import User
-from app.models.enums import UserRole
 
 def get_current_user(request: Request, db: Session = Depends(get_db)) -> User:
     """FastAPI dependency that reads the access_token cookie, decodes it,
@@ -40,7 +39,7 @@ def get_current_user(request: Request, db: Session = Depends(get_db)) -> User:
             detail="Invalid user ID format"
         )
         
-    user = db.query(User).filter(User.id == user_id).first()
+    user = db.query(User).options(joinedload(User.role)).filter(User.id == user_id).first()
     if not user:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -53,7 +52,7 @@ def require_admin(current_user: User = Depends(get_current_user)) -> User:
     """FastAPI dependency that calls get_current_user and additionally
     raises 403 if the user's role is not admin.
     """
-    if current_user.role != UserRole.admin:
+    if current_user.role.is_admin != True:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Admin role required"

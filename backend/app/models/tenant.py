@@ -10,6 +10,7 @@ if TYPE_CHECKING:
     from app.models.document import Document
     from app.models.user import User
     from app.models.query_session import QuerySession
+    from app.models.role import Role
     
 
 class Tenant(Base):
@@ -30,3 +31,4 @@ class Tenant(Base):
     users: Mapped[list["User"]] = relationship("User", back_populates="tenant", cascade="all, delete-orphan")
     documents: Mapped[list["Document"]] = relationship("Document", back_populates="tenant", cascade="all, delete-orphan")
     query_sessions: Mapped[list["QuerySession"]] = relationship("QuerySession", back_populates="tenant", cascade="all, delete-orphan")
+    roles: Mapped[list["Role"]] = relationship("Role", back_populates="tenant", cascade="all, delete-orphan")

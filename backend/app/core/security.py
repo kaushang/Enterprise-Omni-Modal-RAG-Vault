@@ -21,13 +21,13 @@ def create_access_token(data: dict) -> str:
     expire = datetime.now(timezone.utc) + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
     to_encode.update({"exp": expire})
     
-    # Ensure subject, tenant_id, and role are strings
+    # Ensure subject, tenant_id, and role_id are strings
     if "sub" in to_encode:
         to_encode["sub"] = str(to_encode["sub"])
     if "tenant_id" in to_encode:
         to_encode["tenant_id"] = str(to_encode["tenant_id"])
-    if "role" in to_encode:
-        to_encode["role"] = str(to_encode["role"])
+    if "role_id" in to_encode:
+        to_encode["role_id"] = str(to_encode["role_id"])
         
     encoded_jwt = jwt.encode(to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
     return encoded_jwt

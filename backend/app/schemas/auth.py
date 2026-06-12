@@ -1,7 +1,6 @@
 from pydantic import BaseModel, EmailStr, Field, field_validator, HttpUrl, model_validator
 from uuid import UUID
 from datetime import datetime
-from app.models.enums import UserRole
 
 class RegistrationInitRequest(BaseModel):
     org_name: str = Field(..., min_length=2)
@@ -44,11 +43,24 @@ class AcceptInviteRequest(BaseModel):
     token: str
     password: str = Field(..., min_length=8)
 
+class RoleResponse(BaseModel):
+    id: UUID
+    name: str
+    is_admin: bool
+    is_default: bool
+    tenant_id: UUID
+    created_at: datetime
+
+    model_config = {
+        "from_attributes": True
+    }
+
 class UserResponse(BaseModel):
     id: UUID
     email: str
     full_name: str
-    role: UserRole
+    role_id: UUID
+    role: RoleResponse
     tenant_id: UUID
     is_active: bool
     has_password: bool
@@ -62,14 +74,7 @@ class UserResponse(BaseModel):
 class InviteMemberRequest(BaseModel):
     full_name: str
     email: EmailStr
-    role: UserRole
-
-    @field_validator("role")
-    @classmethod
-    def validate_role(cls, v: UserRole) -> UserRole:
-        if v != UserRole.member:
-            raise ValueError("Only member role can be invited")
-        return v
+    role_id: UUID
 
 class MessageResponse(BaseModel):
     message: str

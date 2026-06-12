@@ -94,7 +94,7 @@ const DashboardPage: React.FC = () => {
                 <div>
                   <span className="block text-xs font-semibold text-slate-400 uppercase tracking-wider">Role / Access Level</span>
                   <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold bg-indigo-50 text-indigo-700 mt-0.5 capitalize">
-                    {user.role}
+                    {user.role.name}
                   </span>
                 </div>
               </div>

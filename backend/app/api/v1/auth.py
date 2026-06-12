@@ -4,7 +4,7 @@ import re
 import random
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.responses import RedirectResponse
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from app.db.session import get_db
 from app.core.config import settings
 from app.core.security import (
@@ -22,7 +22,8 @@ from app.models.tenant import Tenant
 from app.models.refresh_token import RefreshToken
 from app.models.invite_token import InviteToken
 from app.models.otp_verification import OTPVerification
-from app.models.enums import UserRole, OTPPurpose
+from app.models.role import Role
+from app.models.enums import OTPPurpose
 from app.schemas.auth import (
     RegistrationInitRequest,
     VerifyRegistrationOTPRequest,
@@ -200,12 +201,31 @@ def register_verify_otp(
         db.add(tenant)
         db.flush()
 
+        # Create Admin default role for this tenant
+        admin_role = Role(
+            tenant_id=tenant.id,
+            name="Admin",
+            is_admin=True,
+            is_default=True
+        )
+        db.add(admin_role)
+
+        # Create Member default role for this tenant
+        member_role = Role(
+            tenant_id=tenant.id,
+            name="Member",
+            is_admin=False,
+            is_default=True
+        )
+        db.add(member_role)
+        db.flush()
+
         user = User(
             tenant_id=tenant.id,
             email=payload["email"],
             full_name=payload["full_name"],
             hashed_password=payload["hashed_password"],
-            role=UserRole.admin,
+            role_id=admin_role.id,
             is_active=True
         )
         db.add(user)
@@ -213,6 +233,8 @@ def register_verify_otp(
         db.delete(otp_record)
         db.commit()
         db.refresh(user)
+        # Eager load user.role
+        user = db.query(User).options(joinedload(User.role)).filter(User.id == user.id).first()
     except Exception as e:
         db.rollback()
         raise HTTPException(
@@ -223,7 +245,8 @@ def register_verify_otp(
     access_token = create_access_token({
         "sub": str(user.id),
         "tenant_id": str(user.tenant_id),
-        "role": user.role.value
+        "role_id": str(user.role_id),
+        "is_admin": user.role.is_admin
     })
     raw_refresh_token, hashed_refresh_token = create_refresh_token()
 
@@ -373,7 +396,7 @@ def reset_password_route(
 @router.post("/login", response_model=UserResponse)
 def login(request: LoginRequest, response: Response, db: Session = Depends(get_db)):
     """Open route to log in, setting HTTP-only cookies on success."""
-    user = db.query(User).filter(User.email == request.email).first()
+    user = db.query(User).options(joinedload(User.role)).filter(User.email == request.email).first()
     if not user or not verify_password(request.password, user.hashed_password):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -390,7 +413,8 @@ def login(request: LoginRequest, response: Response, db: Session = Depends(get_d
     access_token = create_access_token({
         "sub": str(user.id),
         "tenant_id": str(user.tenant_id),
-        "role": user.role.value
+        "role_id": str(user.role_id),
+        "is_admin": user.role.is_admin
     })
     
     raw_refresh_token, hashed_refresh_token = create_refresh_token()
@@ -462,7 +486,7 @@ def refresh(request: Request, response: Response, db: Session = Depends(get_db))
             detail="Refresh token is expired"
         )
         
-    user = db_token.user
+    user = db.query(User).options(joinedload(User.role)).filter(User.id == db_token.user_id).first()
     if not user or not user.is_active:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -473,7 +497,8 @@ def refresh(request: Request, response: Response, db: Session = Depends(get_db))
     access_token = create_access_token({
         "sub": str(user.id),
         "tenant_id": str(user.tenant_id),
-        "role": user.role.value
+        "role_id": str(user.role_id),
+        "is_admin": user.role.is_admin
     })
     
     response.set_cookie(
@@ -517,6 +542,14 @@ def invite_member(
     db: Session = Depends(get_db)
 ):
     """Protected route (admin only) to invite a new member to their tenant."""
+    # Verify the role_id exists and belongs to the admin's tenant
+    role = db.query(Role).filter(Role.id == request.role_id, Role.tenant_id == current_admin.tenant_id).first()
+    if not role:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid role"
+        )
+
     existing_user = db.query(User).filter(User.email == request.email).first()
     if existing_user:
         raise HTTPException(
@@ -530,7 +563,7 @@ def invite_member(
             email=request.email,
             full_name=request.full_name,
             hashed_password="",  # Empty string for now
-            role=request.role,
+            role_id=role.id,
             is_active=False
         )
         db.add(user)
@@ -646,7 +679,7 @@ async def google_auth_callback(
     full_name = user_info["full_name"]
     avatar_url = user_info["avatar_url"]
     
-    user = db.query(User).filter(
+    user = db.query(User).options(joinedload(User.role)).filter(
         (User.google_id == google_id) | (User.email == email)
     ).first()
     
@@ -657,6 +690,7 @@ async def google_auth_callback(
                 user.avatar_url = avatar_url
             db.commit()
             db.refresh(user)
+            user = db.query(User).options(joinedload(User.role)).filter(User.id == user.id).first()
             
         if not user.is_active:
             return RedirectResponse(url=f"{settings.FRONTEND_URL}/login?error=inactive")
@@ -665,7 +699,8 @@ async def google_auth_callback(
         access_token = create_access_token({
             "sub": str(user.id),
             "tenant_id": str(user.tenant_id),
-            "role": user.role.value
+            "role_id": str(user.role_id),
+            "is_admin": user.role.is_admin
         })
         raw_refresh_token, hashed_refresh_token = create_refresh_token()
         
@@ -736,12 +771,31 @@ def google_complete_setup(
         db.add(tenant)
         db.flush()
 
+        # Create Admin default role for this tenant
+        admin_role = Role(
+            tenant_id=tenant.id,
+            name="Admin",
+            is_admin=True,
+            is_default=True
+        )
+        db.add(admin_role)
+
+        # Create Member default role for this tenant
+        member_role = Role(
+            tenant_id=tenant.id,
+            name="Member",
+            is_admin=False,
+            is_default=True
+        )
+        db.add(member_role)
+        db.flush()
+
         user = User(
             tenant_id=tenant.id,
             email=email,
             full_name=full_name,
             hashed_password="",
-            role=UserRole.admin,
+            role_id=admin_role.id,
             is_active=True,
             google_id=google_id,
             avatar_url=avatar_url,
@@ -750,6 +804,8 @@ def google_complete_setup(
         db.add(user)
         db.commit()
         db.refresh(user)
+        # Eager load user.role
+        user = db.query(User).options(joinedload(User.role)).filter(User.id == user.id).first()
     except Exception as e:
         db.rollback()
         raise HTTPException(
@@ -761,7 +817,8 @@ def google_complete_setup(
     access_token = create_access_token({
         "sub": str(user.id),
         "tenant_id": str(user.tenant_id),
-        "role": user.role.value
+        "role_id": str(user.role_id),
+        "is_admin": user.role.is_admin
     })
     raw_refresh_token, hashed_refresh_token = create_refresh_token()
     

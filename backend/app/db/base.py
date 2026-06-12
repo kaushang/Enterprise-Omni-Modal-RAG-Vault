@@ -5,3 +5,4 @@ class Base(DeclarativeBase):
 
 # Import models here so Alembic can detect them
 from app.models.otp_verification import OTPVerification
+from app.models.role import Role

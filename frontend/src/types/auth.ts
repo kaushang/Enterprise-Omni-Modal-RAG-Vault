@@ -1,8 +1,18 @@
+export interface RoleResponse {
+  id: string
+  name: string
+  is_admin: boolean
+  is_default: boolean
+  tenant_id: string
+  created_at: string
+}
+
 export interface UserResponse {
   id: string
   email: string
   full_name: string
-  role: 'admin' | 'member'
+  role_id: string
+  role: RoleResponse
   tenant_id: string
   is_active: boolean
   has_password: boolean

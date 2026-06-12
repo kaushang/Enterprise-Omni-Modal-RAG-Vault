@@ -1,9 +1,6 @@
 import enum
 from sqlalchemy import Enum as SQLEnum
 
-class UserRole(str, enum.Enum):
-    admin = "admin"
-    member = "member"
 
 class FileType(str, enum.Enum):
     text = "text"
@@ -30,7 +27,6 @@ class OTPPurpose(str, enum.Enum):
     forgot_password = "forgot_password"
 
 # SQLAlchemy Enum Types
-user_role_enum = SQLEnum(UserRole, name="userrole")
 file_type_enum = SQLEnum(FileType, name="filetype")
 owner_type_enum = SQLEnum(OwnerType, name="ownertype")
 visibility_enum = SQLEnum(Visibility, name="visibility")
