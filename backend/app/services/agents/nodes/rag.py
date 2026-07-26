@@ -1,346 +1,34 @@
 # Vector Search Agent node and tool definitions
 
-import uuid
 import asyncio
-import re
 import json
-from typing import Optional
+import re
+import uuid
+
 from sqlalchemy import or_
+
+import app.services.rag_service as rag_service
 from app.db.session import SessionLocal
-from app.services.agents.types import AgentState, RAGAgentResult
-from app.models.user import User
 from app.models.document import Document
 from app.models.document_access_policy import DocumentAccessPolicy
 from app.models.enums import DocumentStatus
+from app.models.user import User
 from app.services import embedding_service
-import app.services.rag_service as rag_service
+from app.services.agents.tools.rag_tools import (
+    EXCEL_AGENT_TOOLS,
+    VECTOR_SEARCH_TOOLS,
+    evaluate_context_quality_tool,
+    execute_pandas_code_tool,
+    generate_pandas_code_tool,
+    get_excel_schemas_tool,
+    get_sample_values_tool,
+    identify_relevant_files_tool,
+    rerank_results_tool,
+    search_documents_tool,
+)
+from app.services.agents.types import AgentState, RAGAgentResult
 
 logger = rag_service.logger
-
-
-# --- Tool definitions ---
-
-VECTOR_SEARCH_TOOLS = [
-    {
-        "name": "search_documents",
-        "description": (
-            "Runs semantic search and BM25 keyword search in parallel against the authorized document collection in Qdrant, "
-            "then merges the results. Call this first with the user query. The query parameter MUST ALWAYS be a complete, "
-            "well-formed, grammatically correct sentence preserving the user's intent (NEVER a list or string of keywords). "
-            "On retry after judge feedback, call with a reformulated complete sentence."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "query": {
-                    "type": "string",
-                    "description": (
-                        "The search query. MUST be a complete, well-formed, grammatically correct sentence that preserves the original "
-                        "question's intent and structure. Do NOT extract keywords, strip question words, or convert to a keyword string. "
-                        "On the first attempt, use the original user query or a complete rephrased sentence. "
-                        "On retry, rephrase into a different complete sentence targeting what the previous retrieval missed."
-                    ),
-                },
-                "limit": {
-                    "type": "integer",
-                    "description": "Maximum number of hits to retrieve. Default 15, increase to 20 on retry attempts.",
-                },
-            },
-            "required": ["query", "limit"],
-        },
-    },
-    {
-        "name": "rerank_results",
-        "description": "Reranks the raw hits from search_documents using a cross-encoder. Call this after search_documents. Returns ordered chunks with the most relevant first.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "query": {
-                    "type": "string",
-                    "description": "The same query used in search_documents.",
-                },
-                "hits": {
-                    "type": "array",
-                    "description": "Raw hits returned by search_documents.",
-                    "items": {"type": "object"},
-                },
-            },
-            "required": ["query", "hits"],
-        },
-    },
-    {
-        "name": "evaluate_context_quality",
-        "description": "Evaluates whether the retrieved context is sufficient to answer the user query. Call this after rerank_results. Returns sufficient (bool), confidence (float), reasoning (string), and fix_instruction (string). If not sufficient, use fix_instruction to reformulate the query and call search_documents again.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "query": {"type": "string", "description": "The original user query."},
-                "context_block": {
-                    "type": "string",
-                    "description": "The assembled context block from reranked chunks.",
-                },
-            },
-            "required": ["query", "context_block"],
-        },
-    },
-]
-
-
-# --- Tool executor functions ---
-
-
-# Searches the vector database for the most relevant document chunks matching the user's query.
-async def search_documents_tool(
-    query: str,
-    limit: int,
-    collection_name: str,
-    role_ids: list[str],
-    document_id: Optional[str] = None,
-) -> list[dict]:
-    print(
-        f"[Vector Search Agent] search_documents called with query='{query}', limit={limit}"
-    )
-
-    # Generate an embedding vector for the user's query.
-    query_vector = embedding_service.embed_text(query)
-
-    # Perform a semantic search in Qdrant using the query embedding and access filters.
-    hits = await rag_service._run_qdrant_search(
-        query=query,
-        query_vector=query_vector,
-        collection_name=collection_name,
-        role_ids=role_ids,
-        document_id=document_id,
-        limit=limit,
-    )
-
-    print(f"[Vector Search Agent] search_documents returned {len(hits)} hits.")
-
-    return hits
-
-
-# Re-ranks the retrieved document chunks to improve their relevance to the user's query.
-async def rerank_results_tool(query: str, hits: list[dict]) -> list[dict]:
-    print(f"[Vector Search Agent] rerank_results called with {len(hits)} hits")
-
-    # Re-rank the retrieved chunks using a relevance scoring model.
-    reranked = await rag_service._rerank_chunks(query, hits)
-    print(
-        f"[Vector Search Agent] rerank_results returned {len(reranked)} reranked hits."
-    )
-    return reranked
-
-
-async def evaluate_context_quality_tool(
-    query: str,
-    context_block: str,
-    qdrant_results: list[dict],
-) -> dict:
-    print("[Vector Search Agent] evaluate_context_quality called")
-    if context_block == "No relevant context found." or not context_block.strip():
-        judgment = {
-            "sufficient": False,
-            "confidence": 0.0,
-            "reasoning": "No context retrieved",
-            "fix_instruction": "Try broader search terms",
-        }
-    else:
-        try:
-            client = rag_service._get_async_anthropic_client()
-            judge_system = (
-                "You are a retrieval quality evaluator. Given a user query and the retrieved context chunks, "
-                "evaluate whether the retrieved context contains any information that could help answer the query, "
-                "Only mark insufficient if the context is completely unrelated to the query, can not answer the user's query in any way or is entirely empty. "
-                "Respond ONLY with a JSON object in this exact format with no other text:\n"
-                '{"sufficient": true/false, "confidence": 0.0-1.0, "reasoning": "one sentence explanation", '
-                '"fix_instruction": "if not sufficient, one sentence on how to reformulate the query to get better results, else empty string"}'
-            )
-            judge_prompt = f"""User Query: {query}
-            Retrieved Context:
-            {context_block}
-            Number of chunks retrieved: {len(qdrant_results)}
-            Number of Excel results: 0"""
-
-            response = await client.messages.create(
-                model="claude-haiku-4-5-20251001",
-                max_tokens=256,
-                system=judge_system,
-                messages=[{"role": "user", "content": judge_prompt}],
-            )
-
-            text = response.content[0].text.strip()
-            match = re.search(r"\{.*\}", text, re.DOTALL)
-            if match:
-                text = match.group(0)
-            judgment = json.loads(text)
-            if (
-                "sufficient" not in judgment
-                or "confidence" not in judgment
-                or "reasoning" not in judgment
-            ):
-                raise ValueError("Invalid JSON keys in judge response")
-        except Exception as exc:
-            logger.warning("RAG Judge LLM call failed or parsed incorrectly: %s", exc)
-            judgment = {
-                "sufficient": True,
-                "confidence": 0.7,
-                "reasoning": "Judge unavailable",
-                "fix_instruction": "",
-            }
-
-    print(
-        f"[Vector Search Agent] judge result: sufficient={judgment['sufficient']}, confidence={judgment['confidence']}"
-    )
-    print(f"[Vector Search Agent] judge reasoning: {judgment['reasoning']}.")
-    return judgment
-
-
-# --- Excel Agent (kept as-is) ---
-
-
-async def excel_agent(doc, query: str) -> Optional[dict]:
-    print(f"[Excel Agent] Attempt 1 for {doc.filename}")
-    result, error = await rag_service._run_excel_query(doc, query)
-    if result is not None:
-        return result
-
-    print(
-        f"[Excel Agent] Attempt 1 failed for {doc.filename}. Retrying with error feedback."
-    )
-
-    judgment = {"pandas_code": "", "reasoning": ""}
-    try:
-        client = rag_service._get_async_anthropic_client()
-        system_prompt = (
-            "You are a pandas code generation specialist. A previous attempt to generate pandas code to answer a user query against an Excel file failed during execution. \n"
-            "Your job is to generate corrected pandas code.\n"
-            "The dataframe is already loaded as the variable `df`.\n"
-            "Respond ONLY with a JSON object in this exact format with no other text:\n"
-            '{"pandas_code": "the corrected pandas code as a single string", "reasoning": "one sentence on what you changed"}'
-        )
-
-        user_prompt = f"""Excel File: {doc.filename}
-        Schema: {json.dumps(doc.excel_schema)}
-        User Query: {query}
-        Previous attempt failed during execution.
-        Execution Error: {error}
-        Generate corrected pandas code to answer the query.
-        The dataframe is loaded as `df`. Return only the final result as a variable named `result`."""
-
-        response = await client.messages.create(
-            model="claude-haiku-4-5-20251001",
-            max_tokens=512,
-            system=system_prompt,
-            messages=[{"role": "user", "content": user_prompt}],
-        )
-
-        text = response.content[0].text.strip()
-        match = re.search(r"\{.*\}", text, re.DOTALL)
-        if match:
-            text = match.group(0)
-        parsed = json.loads(text)
-        if "pandas_code" in parsed:
-            judgment = parsed
-    except Exception as exc:
-        logger.warning("Excel Agent LLM call failed or parsed incorrectly: %s", exc)
-        print(
-            f"[Excel Agent] Attempt 2 also failed for {doc.filename}. Returning None."
-        )
-        return None
-
-    code = judgment.get("pandas_code", "").strip()
-    if not code:
-        print(
-            f"[Excel Agent] Attempt 2 also failed for {doc.filename}. Returning None."
-        )
-        return None
-
-    if code.startswith("```"):
-        code = code.split("\n", 1)[-1]
-        if code.endswith("```"):
-            code = code[: -len("```")].strip()
-
-    if not code:
-        print(
-            f"[Excel Agent] Attempt 2 also failed for {doc.filename}. Returning None."
-        )
-        return None
-
-    try:
-        import pandas as pd
-        import threading
-        from RestrictedPython import compile_restricted, safe_globals
-        from RestrictedPython.Guards import guarded_iter_unpack_sequence
-        from RestrictedPython.Eval import (
-            default_guarded_getitem,
-            default_guarded_getiter,
-        )
-
-        abs_path = rag_service.get_absolute_path(doc.file_path)
-        df = rag_service.load_dataframe(abs_path, doc.file_type)
-
-        compiled = compile_restricted(code, filename="<excel_query>", mode="exec")
-
-        restricted_globals = dict(safe_globals)
-        restricted_globals["_getattr_"] = getattr
-        restricted_globals["_getitem_"] = default_guarded_getitem
-        restricted_globals["_getiter_"] = default_guarded_getiter
-        restricted_globals["_iter_unpack_sequence_"] = guarded_iter_unpack_sequence
-        restricted_globals["_write_"] = lambda x: x
-        restricted_globals["pd"] = pd
-
-        restricted_locals = {"df": df}
-
-        result_container = {"result": None, "error": None}
-
-        def _execute():
-            try:
-                exec(compiled, restricted_globals, restricted_locals)
-                result_container["result"] = restricted_locals.get("result")
-            except Exception as exc:
-                result_container["error"] = str(exc)
-
-        thread = threading.Thread(target=_execute, daemon=True)
-        thread.start()
-        thread.join(timeout=10)
-
-        if thread.is_alive():
-            logger.warning("Excel query execution timed out (10s) on attempt 2")
-            print(
-                f"[Excel Agent] Attempt 2 also failed for {doc.filename}. Returning None."
-            )
-            return None
-
-        if result_container["error"]:
-            logger.debug(
-                "Excel query execution error on attempt 2: %s",
-                result_container["error"],
-            )
-            print(
-                f"[Excel Agent] Attempt 2 also failed for {doc.filename}. Returning None."
-            )
-            return None
-
-        result = result_container["result"]
-        if result is None:
-            print(
-                f"[Excel Agent] Attempt 2 also failed for {doc.filename}. Returning None."
-            )
-            return None
-
-        print(f"[Excel Agent] Attempt 2 succeeded for {doc.filename}")
-        return {
-            "filename": doc.filename,
-            "document_id": str(doc.id),
-            "result": str(result),
-        }
-
-    except Exception as exc:
-        logger.error("excel_agent attempt 2 execution failed: %s", exc)
-        print(
-            f"[Excel Agent] Attempt 2 also failed for {doc.filename}. Returning None."
-        )
-        return None
 
 
 def get_db_session():
@@ -677,16 +365,228 @@ async def vector_search_node(state: AgentState) -> dict:
     }
 
 
-# --- excel_agent_node (Placeholder) ---
+# --- excel_agent_node ---
 
 
 async def excel_agent_node(state: AgentState) -> dict:
-    print("[Excel Agent Node] Placeholder - returning empty result")
+    query = state["query"]
+    authorized_doc_ids = state["authorized_doc_ids"]
+    doc_id_to_filename = state["doc_id_to_filename"]
+
+    db = get_db_session()
+    try:
+        doc_uuids = [
+            uuid.UUID(did) if isinstance(did, str) else did
+            for did in authorized_doc_ids
+        ]
+        excel_file_types = {
+            *rag_service.TABULAR_FILE_TYPES,
+            "xlsx",
+            "xls",
+            "csv",
+            "xlsb",
+            "xlsm",
+            "tsv",
+            "ods",
+        }
+        docs = db.query(Document).filter(Document.id.in_(doc_uuids)).all()
+        excel_docs = [
+            d
+            for d in docs
+            if (d.file_type or "").lower() in excel_file_types
+            and d.excel_schema is not None
+        ]
+    finally:
+        db.close()
+
+    if not excel_docs:
+        print("[Excel Agent] No Excel/CSV files with schemas found.")
+        return {
+            "rag_result": RAGAgentResult(
+                success=False,
+                excel_results=[],
+                reasoning="No Excel files available.",
+            )
+        }
+
+    print(
+        f"[Excel Agent] Starting. Found {len(excel_docs)} Excel/CSV files with schemas."
+    )
+
+    system_prompt = f"""You are an Excel data agent. Your goal is to retrieve accurate data from Excel and CSV files that answers the user's query.
+
+    You have tools available:
+    - get_excel_schemas: retrieves the schema of all authorized Excel and CSV files including filenames, column names, and data types
+    - get_sample_values: takes a document ID and returns 5-10 sample rows from that file. Use this when column names alone are ambiguous and you need more context to decide if a file is relevant to the query.
+    - identify_relevant_files: takes the retrieved schemas and the user query, makes an LLM call to determine which files are capable of answering the query, returns a list of relevant document IDs. If no files are relevant, returns an empty list.
+    - generate_pandas_code: takes a document ID and the user query, generates pandas code for that file.
+    - execute_pandas_code: takes a document ID and the generated pandas code, executes it against the file, and returns the result. Call generate_pandas_code first before calling this.
+
+    You have access to {len(excel_docs)} Excel/CSV files. If no files are relevant to the query, stop and return nothing - do not force execution on irrelevant files.
+
+    Think carefully about which tools to use to best achieve your goal."""
+
+    messages = [
+        {
+            "role": "user",
+            "content": (
+                f"Query: {query}\n"
+                "Find and return all data from Excel/CSV files that can answer this query."
+            ),
+        }
+    ]
+    cached_schemas = []
+    cached_code: dict[str, str] = {}
+    client = rag_service._get_async_anthropic_client()
+    excel_results = []
+
+    while True:
+        try:
+            response = await client.messages.create(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=2048,
+                system=system_prompt,
+                tools=EXCEL_AGENT_TOOLS,
+                messages=messages,
+            )
+        except Exception as exc:
+            logger.error("[Excel Agent] Claude API error: %s", exc)
+            break
+
+        messages.append({"role": "assistant", "content": response.content})
+
+        tool_use_blocks = [
+            b for b in response.content if getattr(b, "type", None) == "tool_use"
+        ]
+        if not tool_use_blocks or response.stop_reason == "end_turn":
+            break
+
+        tool_results = []
+        for block in tool_use_blocks:
+            tool_name = block.name
+            tool_input = block.input
+
+            if tool_name == "get_excel_schemas":
+                cached_schemas = await get_excel_schemas_tool(excel_docs)
+                tool_results.append(
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": block.id,
+                        "content": json.dumps({"schemas": cached_schemas}),
+                    }
+                )
+
+            elif tool_name == "get_sample_values":
+                doc_id = tool_input.get("document_id")
+                samples = await get_sample_values_tool(doc_id, excel_docs)
+                tool_results.append(
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": block.id,
+                        "content": json.dumps({"samples": samples}),
+                    }
+                )
+
+            elif tool_name == "identify_relevant_files":
+                if not cached_schemas:
+                    cached_schemas = await get_excel_schemas_tool(excel_docs)
+                relevant_ids = await identify_relevant_files_tool(cached_schemas, query)
+                tool_results.append(
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": block.id,
+                        "content": json.dumps({"relevant_document_ids": relevant_ids}),
+                    }
+                )
+
+            elif tool_name == "generate_pandas_code":
+                doc_id = tool_input.get("document_id")
+                code = await generate_pandas_code_tool(doc_id, query, excel_docs)
+                if code:
+                    cached_code[doc_id] = code
+                tool_results.append(
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": block.id,
+                        "content": json.dumps(
+                            {"pandas_code": code, "success": code is not None}
+                        ),
+                    }
+                )
+
+            elif tool_name == "execute_pandas_code":
+                doc_id = tool_input.get("document_id")
+                # Skip if this document already has a successful result
+                if any(r.get("document_id") == doc_id for r in excel_results):
+                    print(
+                        f"[Excel Agent] Skipping duplicate execution for document_id={doc_id}"
+                    )
+                    tool_results.append(
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": block.id,
+                            "content": json.dumps(
+                                {
+                                    "success": True,
+                                    "note": "Already executed successfully for this document.",
+                                }
+                            ),
+                        }
+                    )
+                    continue
+                code = tool_input.get("pandas_code") or cached_code.get(doc_id)
+                if not code:
+                    tool_results.append(
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": block.id,
+                            "content": json.dumps(
+                                {
+                                    "error": "No pandas code available for this document. Call generate_pandas_code first.",
+                                    "success": False,
+                                }
+                            ),
+                        }
+                    )
+                    continue
+                result = await execute_pandas_code_tool(doc_id, code, query, excel_docs)
+                if result is not None:
+                    excel_results.append(result)
+                print(
+                    f"[Excel Agent] execute_pandas_code returned result for {doc_id}: {result}"
+                )
+                tool_results.append(
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": block.id,
+                        "content": json.dumps(
+                            {
+                                "result": result,
+                                "success": result is not None,
+                                "error": "Execution failed. Call generate_pandas_code again with this error as context to get corrected code."
+                                if result is None
+                                else "",
+                            }
+                        ),
+                    }
+                )
+
+        messages.append({"role": "user", "content": tool_results})
+
+    print(f"[Excel Agent] Done. {len(excel_results)} file(s) returned results.")
     return {
         "rag_result": RAGAgentResult(
-            success=False,
-            excel_results=[],
-            reasoning="Excel agent not yet implemented",
+            success=bool(excel_results),
+            excel_results=excel_results,
+            qdrant_results=[],
+            context_block="No relevant context found.",
+            doc_id_to_filename=doc_id_to_filename,
+            confidence=1.0 if excel_results else 0.0,
+            reasoning=(
+                f"Excel agent returned results from {len(excel_results)} file(s)."
+                if excel_results
+                else "No relevant Excel data found."
+            ),
         )
     }
 
@@ -768,7 +668,16 @@ async def rag_pipeline_node(state: AgentState) -> dict:
         )
 
         # Separate Excel/tabular files from text documents in a single pass
-        excel_file_types = {*rag_service.TABULAR_FILE_TYPES, "xlsx", "xls", "csv"}
+        excel_file_types = {
+            *rag_service.TABULAR_FILE_TYPES,
+            "xlsx",
+            "xls",
+            "csv",
+            "xlsb",
+            "xlsm",
+            "tsv",
+            "ods",
+        }
         excel_docs, non_excel_docs = [], []
         for d in all_authorized_docs:
             (
@@ -894,8 +803,8 @@ async def rag_pipeline_node(state: AgentState) -> dict:
     # Run selected agents in parallel and collect results
     results = await asyncio.gather(*coroutines, return_exceptions=True)
 
-    vec_res: Optional[RAGAgentResult] = None
-    excel_res: Optional[RAGAgentResult] = None
+    vec_res: RAGAgentResult | None = None
+    excel_res: RAGAgentResult | None = None
 
     # Unpack results by agent name, logging any agent-level failures
     for agent_name, result in zip(agent_names, results):

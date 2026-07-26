@@ -1,27 +1,28 @@
 # SQL agent node and SQL judge node
 
-import uuid
 import json
-from app.db.session import SessionLocal
-from app.services.agents.types import AgentState, SQLAgentResult
-from app.models.user import User
-from app.models.external_database import (
-    ExternalDatabaseConnection,
-    DatabaseSchemaCache,
-    DatabaseAccessPolicy,
-)
 import re
-from app.services import database_service
-from app.core.config import settings
+import uuid
+
 import app.services.rag_service as rag_service
+from app.core.config import settings
+from app.db.session import SessionLocal
+from app.models.external_database import (
+    DatabaseAccessPolicy,
+    DatabaseSchemaCache,
+    ExternalDatabaseConnection,
+)
+from app.models.user import User
+from app.services import database_service
 from app.services.agents.tools.sql_tools import (
     SCHEMA_INTELLIGENCE_TOOLS,
     SQL_GENERATION_TOOLS,
     _execute_schema_tool,
-    validate_sql,
     execute_sql,
     generate_sql,
+    validate_sql,
 )
+from app.services.agents.types import AgentState, SQLAgentResult
 
 logger = rag_service.logger
 
@@ -135,9 +136,9 @@ async def gather_sql_context(state: AgentState, db) -> dict:
             t_name = t["name"]
             if t_name in authorized_table_names:
                 all_cols = [c["name"] for c in t.get("columns", [])]
-                all_physical_cols_by_table[t_name.lower()] = set(
+                all_physical_cols_by_table[t_name.lower()] = {
                     c.lower() for c in all_cols
-                )
+                }
                 if user.role.is_admin:
                     auth_cols = set(c.lower() for c in all_cols)
                 else:
