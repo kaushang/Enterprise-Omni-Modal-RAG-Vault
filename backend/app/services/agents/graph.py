@@ -6,7 +6,7 @@ from app.services.agents.nodes.sql import (
     schema_selection_node,
     sql_generation_node,
 )
-from app.services.agents.nodes.rag import rag_node, rag_judge_node
+from app.services.agents.nodes.rag import rag_pipeline_node
 from app.services.agents.nodes.fusion import fusion_node
 
 
@@ -19,7 +19,7 @@ def route_after_orchestrator(state: AgentState) -> list[str]:
     if state["invoke_sql"]:
         next_nodes.append("sql_node")
     if state["invoke_rag"]:
-        next_nodes.append("rag_node")
+        next_nodes.append("rag_pipeline_node")
     if not next_nodes:
         # Safety fallback - should never happen but route to fusion if no agents selected
         next_nodes.append("fusion_node")
@@ -35,29 +35,6 @@ def route_after_sql_generation(state: AgentState) -> str:
     return "sql_failed"
 
 
-def route_after_rag_judge(state: AgentState) -> str:
-    """
-    After RAG judge evaluates the result, decide whether to retry RAG or proceed.
-    """
-    attempts = state["rag_attempts"]
-    max_attempts = state["rag_max_attempts"]
-    sufficient = state["rag_sufficient"]
-
-    if sufficient:
-        print("[Graph] RAG judge: sufficient=True. Proceeding to fusion check.")
-        return "rag_done"
-    elif attempts >= max_attempts:
-        print(
-            f"[Graph] RAG judge: max attempts ({max_attempts}) reached. Proceeding anyway."
-        )
-        return "rag_done"
-    else:
-        print(
-            f"[Graph] RAG judge: sufficient=False. Retrying RAG (attempt {attempts + 1}/{max_attempts})."
-        )
-        return "rag_retry"
-
-
 def build_graph() -> StateGraph:
     graph = StateGraph(AgentState)
 
@@ -65,8 +42,7 @@ def build_graph() -> StateGraph:
     graph.add_node("orchestrator_node", orchestrator_node)
     graph.add_node("schema_selection_node", schema_selection_node)
     graph.add_node("sql_generation_node", sql_generation_node)
-    graph.add_node("rag_node", rag_node)
-    graph.add_node("rag_judge_node", rag_judge_node)
+    graph.add_node("rag_pipeline_node", rag_pipeline_node)
     graph.add_node("fusion_node", fusion_node)
 
     # Entry point
@@ -78,7 +54,7 @@ def build_graph() -> StateGraph:
         route_after_orchestrator,
         {
             "sql_node": "schema_selection_node",
-            "rag_node": "rag_node",
+            "rag_pipeline_node": "rag_pipeline_node",
             "fusion_node": "fusion_node",
         },
     )
@@ -94,16 +70,8 @@ def build_graph() -> StateGraph:
         },
     )
 
-    # RAG path: rag_node -> rag_judge_node -> retry or done
-    graph.add_edge("rag_node", "rag_judge_node")
-    graph.add_conditional_edges(
-        "rag_judge_node",
-        route_after_rag_judge,
-        {
-            "rag_retry": "rag_node",
-            "rag_done": "fusion_node",
-        },
-    )
+    # RAG path: rag_pipeline_node -> fusion_node
+    graph.add_edge("rag_pipeline_node", "fusion_node")
 
     # Fusion -> END
     graph.add_edge("fusion_node", END)

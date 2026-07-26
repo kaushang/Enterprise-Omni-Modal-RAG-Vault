@@ -43,9 +43,5 @@ async def orchestrator_node(state: AgentState) -> dict:
         "mode": plan["mode"],
         "orchestrator_reasoning": plan["reasoning"],
         "sql_generation_attempts": 0,
-        "rag_attempts": 0,
-        "rag_sufficient": False,
-        "rag_fix_instruction": "",
-        "rag_judge_reasoning": "",
         "progress_tokens": ["*Analyzing query and planning agent workflow...*\n\n"],
     }

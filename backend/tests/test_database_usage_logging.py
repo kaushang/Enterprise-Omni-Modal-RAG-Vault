@@ -17,7 +17,6 @@ from app.models.role import Role
 from app.models.user import User
 from app.models.external_database import ExternalDatabaseConnection, DatabaseSchemaCache
 from app.models.usage_log import UsageLog
-from app.services.database_service import translate_nl_to_sql
 from app.services.rag_service import run_rag_pipeline
 
 DATABASE_URL = "sqlite:///:memory:"
@@ -39,64 +38,6 @@ def db_fixture():
     finally:
         session.close()
         Base.metadata.drop_all(bind=engine)
-
-
-@pytest.mark.asyncio
-@patch("app.services.database_service._async_anthropic_client")
-async def test_translate_nl_to_sql_logs_usage(mock_anthropic_client, db):
-    # Setup mock user, role and tenant
-    tenant = Tenant(id=uuid.uuid4(), name="Test Tenant", slug="test-tenant")
-    db.add(tenant)
-    db.commit()
-
-    role = Role(id=uuid.uuid4(), tenant_id=tenant.id, name="Admin", is_admin=True)
-    db.add(role)
-    db.commit()
-
-    user = User(
-        id=uuid.uuid4(),
-        email="user@example.com",
-        full_name="Test User",
-        hashed_password="...",
-        tenant_id=tenant.id,
-        role_id=role.id,
-    )
-    db.add(user)
-    db.commit()
-
-    # Mock Anthropic client response
-    mock_resp = MagicMock()
-    mock_resp.content = [MagicMock(text="SELECT * FROM roles;")]
-    mock_resp.usage = MagicMock(input_tokens=100, output_tokens=50)
-    mock_anthropic_client.messages.create = AsyncMock(return_value=mock_resp)
-
-    # Call translation
-    sql = await translate_nl_to_sql(
-        query="show me all roles",
-        schema_data_filtered={
-            "tables": [
-                {
-                    "name": "roles",
-                    "columns": [{"name": "id", "type": "UUID"}],
-                    "primary_key": [],
-                    "foreign_keys": [],
-                }
-            ]
-        },
-        engine_type="postgresql",
-        db=db,
-        user_id=user.id,
-        tenant_id=tenant.id,
-    )
-
-    assert sql == "SELECT * FROM roles;"
-
-    # Verify UsageLog is saved
-    logs = db.query(UsageLog).filter(UsageLog.user_id == user.id).all()
-    assert len(logs) == 1
-    assert logs[0].input_tokens == 100
-    assert logs[0].output_tokens == 50
-    assert logs[0].provider == "anthropic"
 
 
 @pytest.mark.asyncio

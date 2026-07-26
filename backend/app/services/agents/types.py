@@ -61,14 +61,12 @@ class AgentState(TypedDict):
     sql_generation_attempts: int
     sql_generation_error: Optional[str]
 
-    # --- Retry tracking ---
-    rag_attempts: int
-    rag_max_attempts: int
-
-    # --- Judge verdicts (set by judge nodes) ---
-    rag_sufficient: bool
-    rag_judge_reasoning: str
-    rag_fix_instruction: str
+    # --- Shared RAG Pipeline State ---
+    collection_name: Optional[str]
+    doc_id_to_filename: Optional[dict[str, str]]
+    search_role_ids: Optional[list[str]]
+    tenant_id: Optional[str]
+    authorized_doc_ids: Optional[list[str]]
 
     # --- Fusion output ---
     final_answer: str
@@ -155,11 +153,10 @@ if __name__ == "__main__":
         previous_sql=None,
         sql_generation_attempts=0,
         sql_generation_error=None,
-        rag_attempts=0,
-        rag_max_attempts=3,
-        rag_sufficient=False,
-        rag_judge_reasoning="",
-        rag_fix_instruction="",
+        collection_name=None,
+        doc_id_to_filename=None,
+        search_role_ids=None,
+        authorized_doc_ids=None,
         final_answer="",
         citations=[],
         follow_up_questions=[],

@@ -143,7 +143,7 @@ async def test_database_to_document_fallback_translation_failure(db):
 
     with (
         patch(
-            "app.services.database_service.translate_nl_to_sql",
+            "app.services.agents.tools.sql_tools.generate_sql",
             side_effect=ValueError("Ambiguous column"),
         ),
         patch("app.services.embedding_service.embed_text", side_effect=mock_embed),
@@ -152,6 +152,7 @@ async def test_database_to_document_fallback_translation_failure(db):
             "app.services.rag_service._execute_llm_stream", side_effect=mock_generator
         ),
         patch("app.services.rag_service._get_cross_encoder", return_value=None),
+        patch("app.services.agents.nodes.fusion.get_db_session", return_value=session),
     ):
         events = []
         async for event in run_rag_pipeline(
@@ -254,7 +255,7 @@ async def test_database_to_document_fallback_empty_results(db):
 
     with (
         patch(
-            "app.services.database_service.translate_nl_to_sql",
+            "app.services.agents.tools.sql_tools.generate_sql",
             return_value="SELECT * FROM users;",
         ),
         patch(
@@ -266,6 +267,7 @@ async def test_database_to_document_fallback_empty_results(db):
             "app.services.rag_service._execute_llm_stream", side_effect=mock_generator
         ),
         patch("app.services.rag_service._get_cross_encoder", return_value=None),
+        patch("app.services.agents.nodes.fusion.get_db_session", return_value=session),
     ):
         events = []
         async for event in run_rag_pipeline(
@@ -473,7 +475,7 @@ async def test_cross_source_fusion_success(db):
 
     with (
         patch(
-            "app.services.database_service.translate_nl_to_sql",
+            "app.services.agents.tools.sql_tools.generate_sql",
             return_value="SELECT count(*) FROM users;",
         ),
         patch(
@@ -486,6 +488,7 @@ async def test_cross_source_fusion_success(db):
             "app.services.rag_service._execute_llm_stream", side_effect=mock_generator
         ),
         patch("app.services.rag_service._get_cross_encoder", return_value=None),
+        patch("app.services.agents.nodes.fusion.get_db_session", return_value=session),
     ):
         events = []
         async for event in run_rag_pipeline(

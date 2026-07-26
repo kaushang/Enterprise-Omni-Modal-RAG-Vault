@@ -20,7 +20,7 @@ from app.models.external_database import (
     DatabaseAccessPolicy,
 )
 from app.services.rag_service import get_recent_turns
-from app.services.database_service import translate_nl_to_sql
+from app.services.agents.tools.sql_tools import generate_sql
 
 DATABASE_URL = "sqlite:///:memory:"
 
@@ -205,11 +205,10 @@ async def test_two_turn_conversation_pronoun_resolution(db, mock_setup):
                 ]
             }
 
-            sql = await translate_nl_to_sql(
+            sql = await generate_sql(
                 query="Who does he report to?",
-                schema_data_filtered=schema_data_filtered,
+                schema=schema_data_filtered,
                 engine_type="postgresql",
-                db=db,
                 conversation_history=turns,
             )
 
@@ -221,47 +220,42 @@ async def test_ambiguity_fallback_with_no_context(db):
 
     # Question: "Who does he report to?" without prior context
     # Mock LLM to return exactly: "I cannot generate a SQL query, this is ambiguous"
-    with patch("app.services.database_service.AsyncAnthropic") as mock_anthropic_class:
-        mock_client = MagicMock()
-        mock_anthropic_class.return_value = mock_client
+    mock_client = MagicMock()
 
-        async def mock_create_fn(*args, **kwargs):
-            m_res = MagicMock()
-            m_res.content = [
-                MagicMock(text="I cannot generate a SQL query, this is ambiguous")
+    async def mock_create_fn(*args, **kwargs):
+        m_res = MagicMock()
+        m_res.content = [
+            MagicMock(text="I cannot generate a SQL query, this is ambiguous")
+        ]
+        return m_res
+
+    mock_client.messages.create = mock_create_fn
+
+    with patch(
+        "app.services.rag_service._get_async_anthropic_client", return_value=mock_client
+    ):
+        schema_data_filtered = {
+            "tables": [
+                {
+                    "name": "employees",
+                    "columns": [
+                        {"name": "id", "type": "INTEGER"},
+                        {"name": "name", "type": "VARCHAR"},
+                    ],
+                    "primary_key": ["id"],
+                    "foreign_keys": [],
+                }
             ]
-            return m_res
+        }
 
-        mock_client.messages.create = mock_create_fn
-
-        with patch(
-            "app.services.database_service._async_anthropic_client", new=mock_client
-        ):
-            schema_data_filtered = {
-                "tables": [
-                    {
-                        "name": "employees",
-                        "columns": [
-                            {"name": "id", "type": "INTEGER"},
-                            {"name": "name", "type": "VARCHAR"},
-                        ],
-                        "primary_key": ["id"],
-                        "foreign_keys": [],
-                    }
-                ]
-            }
-
-            with pytest.raises(ValueError) as exc_info:
-                await translate_nl_to_sql(
-                    query="Who does he report to?",
-                    schema_data_filtered=schema_data_filtered,
-                    engine_type="postgresql",
-                    db=db,
-                    conversation_history=[],
-                )
-            assert "I cannot generate a SQL query, this is ambiguous" in str(
-                exc_info.value
+        with pytest.raises(ValueError) as exc_info:
+            await generate_sql(
+                query="Who does he report to?",
+                schema=schema_data_filtered,
+                engine_type="postgresql",
+                conversation_history=[],
             )
+        assert "I cannot generate a SQL query, this is ambiguous" in str(exc_info.value)
 
 
 @pytest.mark.asyncio
