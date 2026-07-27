@@ -2,7 +2,8 @@
 Pydantic schemas for the Chat / RAG query endpoints.
 """
 
-from pydantic import BaseModel, Field, model_validator
+import json
+from pydantic import BaseModel, Field, model_validator, field_validator
 from uuid import UUID
 from datetime import datetime
 from typing import Optional, Any
@@ -93,6 +94,18 @@ class MessageResponse(BaseModel):
     fallback_model_name: Optional[str] = None
 
     model_config = {"from_attributes": True}
+
+    @field_validator(
+        "query_results", "follow_up_questions", "chart_spec", mode="before"
+    )
+    @classmethod
+    def parse_json_fields(cls, v: Any) -> Any:
+        if isinstance(v, str):
+            try:
+                return json.loads(v)
+            except Exception:
+                return v
+        return v
 
     @model_validator(mode="before")
     @classmethod

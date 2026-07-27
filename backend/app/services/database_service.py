@@ -3,6 +3,7 @@ import logging
 import uuid
 from typing import Any, Dict, List, Optional, Set
 
+from anthropic import AsyncAnthropic
 from cryptography.fernet import Fernet
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
@@ -10,13 +11,12 @@ from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
+from app.models.enums import DatabaseEngine
 from app.models.external_database import (
-    ExternalDatabaseConnection,
     DatabaseAccessPolicy,
+    ExternalDatabaseConnection,
 )
 from app.models.user import User
-from app.models.enums import DatabaseEngine
-from anthropic import AsyncAnthropic
 
 logger = logging.getLogger(__name__)
 
@@ -508,7 +508,7 @@ def run_query_on_connection(
 
             # Prevent modification queries
             sql_upper = sql_query.upper().strip()
-            if not sql_upper.startswith("SELECT") and not sql_upper.startswith("WITH"):
+            if not (sql_upper.startswith(("SELECT", "WITH", "EXPLAIN"))):
                 raise ValueError("Only read-only SELECT queries are allowed.")
 
             try:
@@ -556,19 +556,7 @@ def get_user_authorized_columns_for_table(
     has_any_matching_policy = False
 
     for policy in policies:
-        if policy.table_name is None:
-            has_any_matching_policy = True
-            if not policy.columns:  # None or empty means all columns
-                has_full_table_access = True
-            else:
-                for col_spec in policy.columns:
-                    if "." in col_spec:
-                        tbl, col = col_spec.split(".", 1)
-                        if tbl.lower() == table_name.lower():
-                            authorized_columns.add(col.lower())
-                    else:
-                        authorized_columns.add(col_spec.lower())
-        elif policy.table_name.lower() == table_name.lower():
+        if policy.table_name is None or policy.table_name.lower() == table_name.lower():
             has_any_matching_policy = True
             if not policy.columns:  # None or empty means all columns
                 has_full_table_access = True

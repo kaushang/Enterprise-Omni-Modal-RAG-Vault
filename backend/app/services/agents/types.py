@@ -55,11 +55,14 @@ class AgentState(TypedDict):
     # --- Schema selection ---
     db_filtered_schema: Optional[dict]
 
-    # --- SQL generation ---
+    # --- SQL generation & Judge ---
     generated_sql: Optional[str]
     previous_sql: Optional[str]
     sql_generation_attempts: int
     sql_generation_error: Optional[str]
+    judge_result: Optional[JudgeResult]
+    sql_judge_approved: bool
+    sql_judge_retry_count: int
 
     # --- Shared RAG Pipeline State ---
     collection_name: Optional[str]
@@ -98,6 +101,16 @@ class SQLAgentResult:
     reasoning: str = ""  # agent's own explanation of its output quality
     attempts: int = 1  # how many ReAct iterations were needed
     error: Optional[str] = None
+
+
+@dataclass
+class JudgeResult:
+    passed: bool
+    semantic_score: float
+    failed_filters: list[str]
+    critical_optimization_hints: list[str]
+    optimization_hints: list[str]
+    retry_feedback: str
 
 
 @dataclass
@@ -153,6 +166,9 @@ if __name__ == "__main__":
         previous_sql=None,
         sql_generation_attempts=0,
         sql_generation_error=None,
+        judge_result=None,
+        sql_judge_approved=False,
+        sql_judge_retry_count=0,
         collection_name=None,
         doc_id_to_filename=None,
         search_role_ids=None,

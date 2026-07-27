@@ -17,12 +17,16 @@ from app.services import database_service
 from app.services.agents.tools.sql_tools import (
     SCHEMA_INTELLIGENCE_TOOLS,
     SQL_GENERATION_TOOLS,
+    SQL_JUDGE_TOOLS,
     _execute_schema_tool,
+    check_filters,
+    check_optimization,
+    check_semantic_alignment,
     execute_sql,
     generate_sql,
     validate_sql,
 )
-from app.services.agents.types import AgentState, SQLAgentResult
+from app.services.agents.types import AgentState, JudgeResult, SQLAgentResult
 
 logger = rag_service.logger
 
@@ -140,7 +144,7 @@ async def gather_sql_context(state: AgentState, db) -> dict:
                     c.lower() for c in all_cols
                 }
                 if user.role.is_admin:
-                    auth_cols = set(c.lower() for c in all_cols)
+                    auth_cols = {c.lower() for c in all_cols}
                 else:
                     auth_cols = database_service.get_user_authorized_columns_for_table(
                         policies, t_name, all_cols
@@ -462,6 +466,29 @@ async def sql_generation_node(state: AgentState) -> dict:
             f"Schema: {json.dumps(filtered_schema)}\n"
             f"Engine: {engine_type}"
         )
+        judge_res = state.get("judge_result")
+        if judge_res:
+            feedback = getattr(judge_res, "retry_feedback", None) or (
+                judge_res.get("retry_feedback") if isinstance(judge_res, dict) else ""
+            )
+            if feedback:
+                user_prompt += f"\n\nPrevious SQL Feedback from Judge:\n{feedback}"
+
+            crit_hints = (
+                getattr(judge_res, "critical_optimization_hints", [])
+                if hasattr(judge_res, "critical_optimization_hints")
+                else (
+                    judge_res.get("critical_optimization_hints", [])
+                    if isinstance(judge_res, dict)
+                    else []
+                )
+            )
+            if crit_hints:
+                user_prompt += (
+                    "\nCritical optimization issues to fix in the rewritten SQL:\n"
+                )
+                for hint in crit_hints:
+                    user_prompt += f"- {hint}\n"
 
         messages = [{"role": "user", "content": user_prompt}]
         final_sql = None
@@ -625,3 +652,226 @@ async def sql_generation_node(state: AgentState) -> dict:
             f"**Generated SQL:**\n```sql\n{final_sql}\n```\n\n*Executing...*\n\n"
         ],
     }
+
+
+def _parse_judge_json(text: str) -> dict | None:
+    if not text:
+        return None
+    cleaned = text.strip()
+    if cleaned.startswith("```"):
+        cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned)
+        cleaned = re.sub(r"\s*```$", "", cleaned)
+    try:
+        data = json.loads(cleaned)
+        if isinstance(data, dict) and "passed" in data:
+            return data
+    except Exception:
+        pass
+
+    match = re.search(r"\{.*\}", text, re.DOTALL)
+    if match:
+        try:
+            data = json.loads(match.group(0))
+            if isinstance(data, dict) and "passed" in data:
+                return data
+        except Exception:
+            pass
+
+    return None
+
+
+async def sql_judge_node(state: AgentState) -> dict:
+    """
+    SQL Judge Agent following the ReAct pattern.
+    Evaluates generated SQL against user query using three tools:
+    check_semantic_alignment, check_filters, check_optimization.
+    """
+    if state.get("sql_generation_error") or not state.get("generated_sql"):
+        return {}
+    db = get_db_session()
+
+    try:
+        query = state.get("query", "")
+        sql = state.get("generated_sql", "")
+        schema_context = json.dumps(
+            state.get("db_filtered_schema") or state.get("db_authorized_schema") or {}
+        )
+
+        system_prompt = (
+            "You are a SQL Judge Agent operating in a ReAct (Reasoning + Acting) loop.\n"
+            "Your job is to evaluate the generated SQL against the user's natural language query using the available tools.\n\n"
+            "Available tools:\n"
+            "1. check_semantic_alignment(query, sql, schema_context)\n"
+            "   Checks if SQL semantically matches user intent.\n"
+            "2. check_filters(query, sql)\n"
+            "   Checks if all required filters are present in SQL.\n"
+            "3. check_optimization(sql)\n"
+            "   Scans the SQL for anti-patterns and performance issues. Returns critical_optimization_hints and advisory_optimization_hints.\n\n"
+            "Rules:\n"
+            "- You MUST call all three tools before making your final judgment.\n"
+            "- Reason step-by-step about what tools to call.\n"
+            "- End your turn by returning ONLY a valid JSON object in this exact format with no extra commentary:\n"
+            "{\n"
+            '    "passed": true,\n'
+            '    "semantic_score": 0.95,\n'
+            '    "failed_filters": [],\n'
+            '    "critical_optimization_hints": [],\n'
+            '    "optimization_hints": [],\n'
+            '    "retry_feedback": ""\n'
+            "}\n\n"
+            "If passed is false or critical_optimization_hints is non-empty, retry_feedback must be a clear instruction string for the SQL generation agent listing what to fix."
+        )
+
+        user_prompt = (
+            f"User Query: {query}\n\n"
+            f"Generated SQL: {sql}\n\n"
+            f"Schema Context:\n{schema_context}\n\n"
+            "Evaluate this generated SQL using all three available tools and return your judgment JSON."
+        )
+
+        messages = [{"role": "user", "content": user_prompt}]
+        reformat_attempted = False
+        parsed_result = None
+
+        client = rag_service._get_async_anthropic_client()
+        max_turns = 6
+
+        for turn in range(max_turns):
+            response = await client.messages.create(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=1024,
+                system=system_prompt,
+                messages=messages,
+                tools=SQL_JUDGE_TOOLS,
+            )
+
+            assistant_content = response.content
+            messages.append({"role": "assistant", "content": assistant_content})
+
+            text_blocks = [
+                b.text
+                for b in assistant_content
+                if isinstance(getattr(b, "text", None), str) and b.text
+            ]
+            if text_blocks:
+                print(
+                    f"[SQL Judge Agent] ReAct Thought (Turn {turn + 1}): {' '.join(text_blocks)}"
+                )
+
+            tool_use_blocks = [
+                block
+                for block in assistant_content
+                if getattr(block, "type", None) == "tool_use"
+            ]
+
+            if not tool_use_blocks:
+                full_text = " ".join(text_blocks)
+                parsed = _parse_judge_json(full_text)
+
+                if parsed and "passed" in parsed:
+                    parsed_result = parsed
+                    break
+
+                elif not reformat_attempted:
+                    reformat_attempted = True
+                    print(
+                        "[SQL Judge Agent] Failed to parse JSON final answer. Prompting model to reformat."
+                    )
+                    messages.append(
+                        {
+                            "role": "user",
+                            "content": (
+                                "Your previous response could not be parsed as valid JSON. "
+                                "Please respond ONLY with a valid JSON object with keys "
+                                "'passed' (boolean), 'semantic_score' (float), 'failed_filters' (list of strings), "
+                                "'critical_optimization_hints' (list of strings), "
+                                "'optimization_hints' (list of strings), and 'retry_feedback' (string)."
+                            ),
+                        }
+                    )
+                    continue
+                else:
+                    break
+
+            tool_results = []
+            for block in tool_use_blocks:
+                tool_name = block.name
+                tool_args = block.input or {}
+                print(
+                    f"[SQL Judge Agent] Tool Call (Turn {turn + 1}): {tool_name}({tool_args})"
+                )
+
+                if tool_name == "check_semantic_alignment":
+                    t_query = tool_args.get("query") or query
+                    t_sql = tool_args.get("sql") or sql
+                    t_schema = tool_args.get("schema_context") or schema_context
+                    sem_passed, sem_score = await check_semantic_alignment(
+                        t_query, t_sql, t_schema
+                    )
+                    res_str = json.dumps(
+                        {"passed": sem_passed, "confidence": sem_score}
+                    )
+
+                elif tool_name == "check_filters":
+                    t_query = tool_args.get("query") or query
+                    t_sql = tool_args.get("sql") or sql
+                    missing = check_filters(t_query, t_sql)
+                    res_str = json.dumps({"failed_filters": missing})
+
+                elif tool_name == "check_optimization":
+                    t_sql = tool_args.get("sql") or sql
+                    critical_hints, advisory_hints = await check_optimization(
+                        sql=t_sql,
+                        engine_type=state.get("db_connection_engine", "postgresql"),
+                        db=db,
+                        connection_id=state.get("db_connection_id"),
+                    )
+                    res_str = json.dumps(
+                        {
+                            "critical_optimization_hints": critical_hints,
+                            "advisory_optimization_hints": advisory_hints,
+                        }
+                    )
+
+                else:
+                    res_str = json.dumps({"error": f"Unknown tool: {tool_name}"})
+
+                tool_results.append(
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": block.id,
+                        "content": res_str,
+                    }
+                )
+
+            messages.append({"role": "user", "content": tool_results})
+
+        current_retry_count = state.get("sql_judge_retry_count", 0)
+        if parsed_result:
+            judge_result = JudgeResult(
+                passed=bool(parsed_result.get("passed", False)),
+                semantic_score=float(parsed_result.get("semantic_score", 0.0)),
+                failed_filters=list(parsed_result.get("failed_filters", [])),
+                critical_optimization_hints=list(
+                    parsed_result.get("critical_optimization_hints", [])
+                ),
+                optimization_hints=list(parsed_result.get("optimization_hints", [])),
+                retry_feedback=str(parsed_result.get("retry_feedback", "")),
+            )
+            print(
+                f"[SQL Judge Agent] Judgment complete. Passed: {judge_result.passed}, Score: {judge_result.semantic_score:.2f}"
+            )
+            return {
+                "judge_result": judge_result,
+                "sql_judge_retry_count": current_retry_count + 1,
+            }
+        else:
+            print("[SQL Judge Agent] ReAct loop completed without valid judgment JSON.")
+            return {"sql_judge_retry_count": current_retry_count}
+
+    except Exception as exc:
+        logger.warning(f"[SQL Judge Agent] ReAct loop exception: {exc}")
+        print(f"[SQL Judge Agent] Exception encountered: {exc}")
+        return {"sql_judge_retry_count": state.get("sql_judge_retry_count", 0)}
+    finally:
+        db.close()

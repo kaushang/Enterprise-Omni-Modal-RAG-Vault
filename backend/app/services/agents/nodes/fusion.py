@@ -96,15 +96,6 @@ async def _resolve_model_config(
 logger = logging.getLogger(__name__)
 
 
-def get_db_session():
-    db = SessionLocal()
-    try:
-        return db
-    except Exception:
-        db.close()
-        raise
-
-
 async def fusion_node(state: AgentState) -> dict:
     mode = state["mode"]
     sql_result = state.get("sql_result")
@@ -115,7 +106,7 @@ async def fusion_node(state: AgentState) -> dict:
     model_id = state["model_id"]
     user_id = state["user_id"]
 
-    db = get_db_session()
+    db = SessionLocal()
     try:
         user = db.query(User).filter(User.id == uuid.UUID(user_id)).first()
         if not user:
