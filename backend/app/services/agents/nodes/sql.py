@@ -26,6 +26,7 @@ from app.services.agents.tools.sql_tools import (
     generate_sql,
     validate_sql,
 )
+from app.services.agents.tools.utils import format_tool_descriptions, parse_json
 from app.services.agents.types import AgentState, JudgeResult, SQLAgentResult
 
 logger = rag_service.logger
@@ -200,42 +201,6 @@ async def gather_sql_context(state: AgentState, db) -> dict:
         }
 
 
-def _parse_schema_selection_json(text: str) -> dict | None:
-    # Return None if the response is empty.
-    if not text:
-        return None
-
-    # Remove leading/trailing whitespace from the response.
-    cleaned = text.strip()
-
-    # Remove Markdown code block markers if the JSON is wrapped in them.
-    if cleaned.startswith("```"):
-        cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned)
-        cleaned = re.sub(r"\s*```$", "", cleaned)
-
-    # Try parsing the cleaned text directly as JSON.
-    try:
-        data = json.loads(cleaned)
-        if isinstance(data, dict) and "selected_tables" in data:
-            return data
-    except Exception:
-        pass
-
-    # As a fallback, extract the first JSON object from the response.
-    match = re.search(r"\{.*\}", text, re.DOTALL)
-    if match:
-        # Try parsing the extracted JSON object.
-        try:
-            data = json.loads(match.group(0))
-            if isinstance(data, dict) and "selected_tables" in data:
-                return data
-        except Exception:
-            pass
-
-    # Return None if no valid schema selection JSON could be parsed.
-    return None
-
-
 async def schema_selection_node(state: AgentState) -> dict:
     """
     Schema Intelligence Agent following the ReAct pattern.
@@ -266,13 +231,7 @@ async def schema_selection_node(state: AgentState) -> dict:
         "You are a Schema Intelligence Agent operating in a ReAct (Reasoning + Acting) loop.\n"
         "Your objective is to identify the minimum set of database tables required for another agent to generate correct SQL for the user's query.\n"
         "You have access to tools for discovering database schema. At every step, reason about what information you currently have, what information is missing, and whether a tool call is necessary.\n\n"
-        "Available tools:\n"
-        "1. get_all_table_names\n"
-        "   Returns all authorized table names.\n"
-        "2. get_table_schema(table_names)\n"
-        "   Returns the schema for the specified tables.\n"
-        "3. get_all_tables_schema\n"
-        "   Returns the schema for every authorized table.\n\n"
+        f"Available tools:\n{format_tool_descriptions(SCHEMA_INTELLIGENCE_TOOLS)}\n\n"
         "Rules:\n"
         "- Use tools only when they help you make a better decision.\n"
         "- Avoid unnecessary tool calls and avoid retrieving more schema than required.\n"
@@ -339,7 +298,7 @@ async def schema_selection_node(state: AgentState) -> dict:
                 or getattr(response, "stop_reason", None) == "end_turn"
             ):
                 full_text = " ".join(text_blocks)
-                parsed = _parse_schema_selection_json(full_text)
+                parsed = parse_json(full_text, "selected_tables")
 
                 if parsed and "selected_tables" in parsed:
                     selected_table_names = parsed.get("selected_tables", [])
@@ -446,10 +405,7 @@ async def sql_generation_node(state: AgentState) -> dict:
         system_prompt = (
             "You are a SQL Agent operating in a ReAct (Reasoning + Acting) loop.\n"
             "Your responsibility is to answer the user's database question by producing correct, authorized, and executable SQL.\n\n"
-            "You have three tools:\n"
-            "1. generate_sql - generates SQL from the user query and schema. Pass failed_sql and error_message if correcting a previous attempt.\n"
-            "2. validate_sql - checks whether the SQL accesses only authorized tables and columns.\n"
-            "3. execute_sql - executes the SQL against the database and returns results.\n\n"
+            f"Available tools:\n{format_tool_descriptions(SQL_GENERATION_TOOLS)}\n\n"
             "At each step, reason about what you know so far and decide what to do next.\n"
             "You decide the order, when to retry, and when you are confident enough to stop.\n\n"
             "Constraints:\n"
@@ -654,32 +610,6 @@ async def sql_generation_node(state: AgentState) -> dict:
     }
 
 
-def _parse_judge_json(text: str) -> dict | None:
-    if not text:
-        return None
-    cleaned = text.strip()
-    if cleaned.startswith("```"):
-        cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned)
-        cleaned = re.sub(r"\s*```$", "", cleaned)
-    try:
-        data = json.loads(cleaned)
-        if isinstance(data, dict) and "passed" in data:
-            return data
-    except Exception:
-        pass
-
-    match = re.search(r"\{.*\}", text, re.DOTALL)
-    if match:
-        try:
-            data = json.loads(match.group(0))
-            if isinstance(data, dict) and "passed" in data:
-                return data
-        except Exception:
-            pass
-
-    return None
-
-
 async def sql_judge_node(state: AgentState) -> dict:
     """
     SQL Judge Agent following the ReAct pattern.
@@ -700,13 +630,7 @@ async def sql_judge_node(state: AgentState) -> dict:
         system_prompt = (
             "You are a SQL Judge Agent operating in a ReAct (Reasoning + Acting) loop.\n"
             "Your job is to evaluate the generated SQL against the user's natural language query using the available tools.\n\n"
-            "Available tools:\n"
-            "1. check_semantic_alignment(query, sql, schema_context)\n"
-            "   Checks if SQL semantically matches user intent.\n"
-            "2. check_filters(query, sql)\n"
-            "   Checks if all required filters are present in SQL.\n"
-            "3. check_optimization(sql)\n"
-            "   Scans the SQL for anti-patterns and performance issues. Returns critical_optimization_hints and advisory_optimization_hints.\n\n"
+            f"Available tools:\n{format_tool_descriptions(SQL_JUDGE_TOOLS)}\n\n"
             "Rules:\n"
             "- You MUST call all three tools before making your final judgment.\n"
             "- Reason step-by-step about what tools to call.\n"
@@ -766,7 +690,7 @@ async def sql_judge_node(state: AgentState) -> dict:
 
             if not tool_use_blocks:
                 full_text = " ".join(text_blocks)
-                parsed = _parse_judge_json(full_text)
+                parsed = parse_json(full_text, "passed")
 
                 if parsed and "passed" in parsed:
                     parsed_result = parsed

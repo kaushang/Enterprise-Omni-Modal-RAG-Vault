@@ -26,6 +26,7 @@ from app.services.agents.tools.rag_tools import (
     rerank_results_tool,
     search_documents_tool,
 )
+from app.services.agents.tools.utils import format_tool_descriptions
 from app.services.agents.types import AgentState, RAGAgentResult
 
 logger = rag_service.logger
@@ -181,10 +182,8 @@ async def vector_search_node(state: AgentState) -> dict:
     - Both on the first attempt and on retries, the query parameter MUST preserve the original question's intent and sentence structure.
     - Rephrasing is permitted only to make the sentence clearer or more retrieval-friendly, but it MUST ALWAYS remain a complete, grammatical sentence.
 
-    You have three tools:
-    - search_documents: searches the document collection using semantic and keyword search, returns raw hits
-    - rerank_results: reranks a list of raw hits by relevance to the query, returns ordered chunks  
-    - evaluate_context_quality: evaluates whether the retrieved context is sufficient to answer the query, returns sufficient/confidence/reasoning/fix_instruction
+    Available tools:
+    {format_tool_descriptions(VECTOR_SEARCH_TOOLS)}
 
     If evaluate_context_quality returns sufficient=false, reformulate the query into a new complete, well-formed sentence based on the fix_instruction and call search_documents again with the new query sentence and a limit of 20. You have a maximum of {max_attempts} total search attempts.
 
@@ -415,12 +414,8 @@ async def excel_agent_node(state: AgentState) -> dict:
 
     system_prompt = f"""You are an Excel data agent. Your goal is to retrieve accurate data from Excel and CSV files that answers the user's query.
 
-    You have tools available:
-    - get_excel_schemas: retrieves the schema of all authorized Excel and CSV files including filenames, column names, and data types
-    - get_sample_values: takes a document ID and returns 5-10 sample rows from that file. Use this when column names alone are ambiguous and you need more context to decide if a file is relevant to the query.
-    - identify_relevant_files: takes the retrieved schemas and the user query, makes an LLM call to determine which files are capable of answering the query, returns a list of relevant document IDs. If no files are relevant, returns an empty list.
-    - generate_pandas_code: takes a document ID and the user query, generates pandas code for that file.
-    - execute_pandas_code: takes a document ID and the generated pandas code, executes it against the file, and returns the result. Call generate_pandas_code first before calling this.
+    Available tools:
+    {format_tool_descriptions(EXCEL_AGENT_TOOLS)}
 
     You have access to {len(excel_docs)} Excel/CSV files. If no files are relevant to the query, stop and return nothing - do not force execution on irrelevant files.
 
