@@ -9,7 +9,6 @@ from app.services.agents.nodes.query_rewriter import (
     _validate_rewrite,
     query_rewriter_node,
 )
-from app.services.agents.tools.query_rewriter_tools import QUERY_REWRITER_TOOLS
 
 
 @pytest.mark.asyncio

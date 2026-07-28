@@ -321,7 +321,7 @@ async def generate_sql(
 
 
 # TOOLS
-def _execute_schema_tool(
+def execute_schema_tool(
     tool_name: str, tool_args: dict, authorized_tables: list[dict]
 ) -> str:
     # returns the names of all authorized tables

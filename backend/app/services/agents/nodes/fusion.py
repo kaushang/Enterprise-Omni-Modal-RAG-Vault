@@ -1,16 +1,17 @@
 # Fusion node - final answer generation
 
-import uuid
-import re
 import json
 import logging
-from app.db.session import SessionLocal
-from app.services.agents.types import AgentState
-from app.models.user import User
-from app.models.available_model import AvailableModel
-from app.services.model_router import route_model, get_default_model_config
+import re
+import uuid
+
 import app.services.rag_service as rag_service
 from app.core.utils import call_llm_with_fallback, extract_chart_spec
+from app.db.session import SessionLocal
+from app.models.available_model import AvailableModel
+from app.models.user import User
+from app.services.agents.types import AgentState
+from app.services.model_router import get_default_model_config, route_model
 
 
 async def _resolve_model_config(
@@ -148,9 +149,7 @@ async def fusion_node(state: AgentState) -> dict:
         if mode == "cross_source":
             sql_ok = bool(sql_result and sql_result.success)
             rag_ok = bool(rag_result and rag_result.success)
-            if not sql_ok and not rag_ok:
-                actual_mode = "doc_only"
-            elif not sql_ok:
+            if not sql_ok and not rag_ok or not sql_ok:
                 actual_mode = "doc_only"
             elif not rag_ok:
                 actual_mode = "db_only"

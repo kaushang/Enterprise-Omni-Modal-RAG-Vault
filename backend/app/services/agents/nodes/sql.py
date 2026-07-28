@@ -3,6 +3,7 @@
 import json
 import re
 import uuid
+from functools import partial
 
 import app.services.rag_service as rag_service
 from app.core.config import settings
@@ -18,10 +19,10 @@ from app.services.agents.tools.sql_tools import (
     SCHEMA_INTELLIGENCE_TOOLS,
     SQL_GENERATION_TOOLS,
     SQL_JUDGE_TOOLS,
-    _execute_schema_tool,
     check_filters,
     check_optimization,
     check_semantic_alignment,
+    execute_schema_tool,
     execute_sql,
     generate_sql,
     validate_sql,
@@ -336,7 +337,7 @@ async def schema_selection_node(state: AgentState) -> dict:
                     f"[Schema Intelligence Agent] Tool Call (Turn {turn + 1}): {tool_name}({tool_args})"
                 )
 
-                res_str = _execute_schema_tool(tool_name, tool_args, authorized_tables)
+                res_str = execute_schema_tool(tool_name, tool_args, authorized_tables)
                 tool_results.append(
                     {
                         "type": "tool_result",
@@ -456,6 +457,56 @@ async def sql_generation_node(state: AgentState) -> dict:
         last_execution_time_ms = 0
         max_turns = 8
 
+        generate_sql_fn = partial(
+            generate_sql,
+            query=query,
+            schema=filtered_schema,
+            engine_type=engine_type,
+            conversation_history=conversation_history,
+        )
+
+        async def generate_sql_fn_wrapper(**kwargs) -> dict:
+            result = await generate_sql_fn(**kwargs)
+            print(f"[SQL Agent] Generated SQL: {result}")
+            return {"sql": result}
+
+        def validate_sql_fn(sql: str = "") -> dict:
+            if is_admin:
+                result = {"valid": True, "reason": ""}
+            else:
+                result = json.loads(
+                    validate_sql(
+                        sql=sql,
+                        engine_type=engine_type,
+                        authorized_cols_by_table=authorized_cols_by_table,
+                        valid_tables=valid_tables,
+                        all_physical_cols_by_table=all_physical_cols_by_table,
+                    )
+                )
+            print(f"[SQL Agent] Validation result: {result}")
+            return result
+
+        def execute_sql_fn(sql: str = "") -> dict:
+            nonlocal last_executed_sql, last_executed_results, last_execution_time_ms
+            result = json.loads(
+                execute_sql(
+                    sql=sql,
+                    connection_id=state["db_connection_id"],
+                    db=db,
+                )
+            )
+            if result.get("success"):
+                last_executed_sql = sql
+                last_executed_results = result.get("rows")
+                last_execution_time_ms = result.get("execution_time_ms", 0)
+            return result
+
+        SQL_GENERATION_TOOL_REGISTRY = {
+            "generate_sql": generate_sql_fn_wrapper,
+            "validate_sql": validate_sql_fn,
+            "execute_sql": execute_sql_fn,
+        }
+
         client = rag_service._get_async_anthropic_client()
 
         for turn in range(max_turns):
@@ -498,69 +549,39 @@ async def sql_generation_node(state: AgentState) -> dict:
                 break
 
             tool_results = []
+
             for block in tool_use_blocks:
                 tool_name = block.name
                 tool_args = block.input or {}
+
                 print(f"[SQL Agent] Tool Call: {tool_name}({tool_args})")
 
-                if tool_name == "generate_sql":
-                    try:
-                        result = await generate_sql(
-                            query=query,
-                            schema=filtered_schema,
-                            engine_type=engine_type,
-                            conversation_history=conversation_history,
-                            failed_sql=tool_args.get("failed_sql"),
-                            error_message=tool_args.get("error_message"),
-                        )
-                        res_str = json.dumps({"sql": result})
-                        print(f"[SQL Agent] Generated SQL: {result}")
-                    except Exception as exc:
-                        res_str = json.dumps({"error": str(exc)})
-                        print(f"[SQL Agent] generate_sql failed: {exc}")
+                tool_fn = SQL_GENERATION_TOOL_REGISTRY.get(tool_name)
 
-                elif tool_name == "validate_sql":
-                    sql_to_validate = tool_args.get("sql", "")
-                    if is_admin:
-                        res_str = json.dumps({"valid": True, "reason": ""})
-                    else:
-                        res_str = validate_sql(
-                            sql=sql_to_validate,
-                            engine_type=engine_type,
-                            authorized_cols_by_table=authorized_cols_by_table,
-                            valid_tables=valid_tables,
-                            all_physical_cols_by_table=all_physical_cols_by_table,
-                        )
-                    print(f"[SQL Agent] Validation result: {res_str}")
+                try:
+                    if tool_fn is None:
+                        raise ValueError(f"Unknown tool: {tool_name}")
 
-                elif tool_name == "execute_sql":
-                    sql_to_execute = tool_args.get("sql", "")
-                    res_str = execute_sql(
-                        sql=sql_to_execute,
-                        connection_id=state["db_connection_id"],
-                        db=db,
+                    result = await tool_fn(**tool_args)
+
+                    tool_results.append(
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": block.id,
+                            "content": json.dumps(result, default=str),
+                        }
                     )
-                    try:
-                        res_data = json.loads(res_str)
-                        if res_data.get("success"):
-                            last_executed_sql = sql_to_execute
-                            last_executed_results = res_data.get("rows")
-                            last_execution_time_ms = res_data.get(
-                                "execution_time_ms", 0
-                            )
-                    except Exception:
-                        pass
 
-                else:
-                    res_str = json.dumps({"error": f"Unknown tool: {tool_name}"})
+                except Exception as exc:
+                    print(f"[SQL Agent] Tool execution error ({tool_name}): {exc}")
 
-                tool_results.append(
-                    {
-                        "type": "tool_result",
-                        "tool_use_id": block.id,
-                        "content": res_str,
-                    }
-                )
+                    tool_results.append(
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": block.id,
+                            "content": json.dumps({"error": str(exc)}),
+                        }
+                    )
 
             messages.append({"role": "user", "content": tool_results})
 
@@ -627,6 +648,41 @@ async def sql_judge_node(state: AgentState) -> dict:
             state.get("db_filtered_schema") or state.get("db_authorized_schema") or {}
         )
 
+        async def check_semantic_alignment_fn(
+            query: str = query,
+            sql: str = sql,
+            schema_context: str = schema_context,
+        ) -> dict:
+            passed, confidence = await check_semantic_alignment(
+                query=query, sql=sql, schema_context=schema_context
+            )
+            return {"passed": passed, "confidence": confidence}
+
+        def check_filters_fn(
+            query: str = query,
+            sql: str = sql,
+        ) -> dict:
+            return {"failed_filters": check_filters(query=query, sql=sql)}
+
+        check_optimization_partial = partial(
+            check_optimization,
+            engine_type=state.get("db_connection_engine", "postgresql"),
+            db=db,
+            connection_id=state.get("db_connection_id"),
+        )
+
+        async def check_optimization_fn(sql: str = sql) -> dict:
+            critical_hints, advisory_hints = await check_optimization_partial(sql=sql)
+            return {
+                "critical_optimization_hints": critical_hints,
+                "advisory_optimization_hints": advisory_hints,
+            }
+
+        SQL_JUDGE_TOOL_REGISTRY = {
+            "check_semantic_alignment": check_semantic_alignment_fn,
+            "check_filters": check_filters_fn,
+            "check_optimization": check_optimization_fn,
+        }
         system_prompt = (
             "You are a SQL Judge Agent operating in a ReAct (Reasoning + Acting) loop.\n"
             "Your job is to evaluate the generated SQL against the user's natural language query using the available tools.\n\n"
@@ -718,55 +774,44 @@ async def sql_judge_node(state: AgentState) -> dict:
                     break
 
             tool_results = []
+
             for block in tool_use_blocks:
                 tool_name = block.name
                 tool_args = block.input or {}
+
                 print(
-                    f"[SQL Judge Agent] Tool Call (Turn {turn + 1}): {tool_name}({tool_args})"
+                    f"[SQL Judge Agent] Tool Call (Turn {turn + 1}): "
+                    f"{tool_name}({tool_args})"
                 )
 
-                if tool_name == "check_semantic_alignment":
-                    t_query = tool_args.get("query") or query
-                    t_sql = tool_args.get("sql") or sql
-                    t_schema = tool_args.get("schema_context") or schema_context
-                    sem_passed, sem_score = await check_semantic_alignment(
-                        t_query, t_sql, t_schema
-                    )
-                    res_str = json.dumps(
-                        {"passed": sem_passed, "confidence": sem_score}
-                    )
+                tool_fn = SQL_JUDGE_TOOL_REGISTRY.get(tool_name)
 
-                elif tool_name == "check_filters":
-                    t_query = tool_args.get("query") or query
-                    t_sql = tool_args.get("sql") or sql
-                    missing = check_filters(t_query, t_sql)
-                    res_str = json.dumps({"failed_filters": missing})
+                try:
+                    if tool_fn is None:
+                        raise ValueError(f"Unknown tool: {tool_name}")
 
-                elif tool_name == "check_optimization":
-                    t_sql = tool_args.get("sql") or sql
-                    critical_hints, advisory_hints = await check_optimization(
-                        sql=t_sql,
-                        engine_type=state.get("db_connection_engine", "postgresql"),
-                        db=db,
-                        connection_id=state.get("db_connection_id"),
-                    )
-                    res_str = json.dumps(
+                    result = await tool_fn(**tool_args)
+
+                    tool_results.append(
                         {
-                            "critical_optimization_hints": critical_hints,
-                            "advisory_optimization_hints": advisory_hints,
+                            "type": "tool_result",
+                            "tool_use_id": block.id,
+                            "content": json.dumps(result, default=str),
                         }
                     )
 
-                else:
-                    res_str = json.dumps({"error": f"Unknown tool: {tool_name}"})
+                except Exception as exc:
+                    print(
+                        f"[SQL Judge Agent] Tool execution error ({tool_name}): {exc}"
+                    )
 
-                tool_results.append(
-                    {
-                        "type": "tool_result",
-                        "tool_use_id": block.id,
-                        "content": res_str,
-                    }
-                )
+                    tool_results.append(
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": block.id,
+                            "content": json.dumps({"error": str(exc)}),
+                        }
+                    )
 
             messages.append({"role": "user", "content": tool_results})
 
