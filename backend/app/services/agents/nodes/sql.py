@@ -637,7 +637,7 @@ async def sql_judge_node(state: AgentState) -> dict:
             "- End your turn by returning ONLY a valid JSON object in this exact format with no extra commentary:\n"
             "{\n"
             '    "passed": true,\n'
-            '    "semantic_score": 0.95,\n'
+            '    "semantic_score": 0.0-1.0,\n'
             '    "failed_filters": [],\n'
             '    "critical_optimization_hints": [],\n'
             '    "optimization_hints": [],\n'

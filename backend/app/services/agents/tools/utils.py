@@ -25,7 +25,10 @@ def format_tool_descriptions(tools: list[dict]) -> str:
     return "\n\n".join(lines)
 
 
-def parse_json(text: str) -> dict | None:
+format_tools_for_prompt = format_tool_descriptions
+
+
+def parse_json(text: str, reason: str | None = None) -> dict | None:
     # Return None if the response is empty.
     if not text:
         return None
@@ -41,7 +44,7 @@ def parse_json(text: str) -> dict | None:
     # Try parsing the cleaned text directly as JSON.
     try:
         data = json.loads(cleaned)
-        if isinstance(data, dict) and "selected_tables" in data:
+        if isinstance(data, dict) and reason in data:
             return data
     except Exception:
         pass
@@ -52,7 +55,7 @@ def parse_json(text: str) -> dict | None:
         # Try parsing the extracted JSON object.
         try:
             data = json.loads(match.group(0))
-            if isinstance(data, dict) and "selected_tables" in data:
+            if isinstance(data, dict) and reason in data:
                 return data
         except Exception:
             pass

@@ -3,6 +3,7 @@ from langgraph.graph import END, START, StateGraph
 
 from app.services.agents.nodes.fusion import fusion_node
 from app.services.agents.nodes.orchestrator import orchestrator_node
+from app.services.agents.nodes.query_rewriter import query_rewriter_node
 from app.services.agents.nodes.rag import rag_pipeline_node
 from app.services.agents.nodes.sql import (
     schema_selection_node,
@@ -82,6 +83,7 @@ def build_graph() -> StateGraph:
     graph = StateGraph(AgentState)
 
     # Add all nodes
+    graph.add_node("query_rewriter_node", query_rewriter_node)
     graph.add_node("orchestrator_node", orchestrator_node)
     graph.add_node("schema_selection_node", schema_selection_node)
     graph.add_node("sql_generation_node", sql_generation_node)
@@ -90,7 +92,8 @@ def build_graph() -> StateGraph:
     graph.add_node("fusion_node", fusion_node)
 
     # Entry point
-    graph.add_edge(START, "orchestrator_node")
+    graph.add_edge(START, "query_rewriter_node")
+    graph.add_edge("query_rewriter_node", "orchestrator_node")
 
     # SQL path
     graph.add_conditional_edges(

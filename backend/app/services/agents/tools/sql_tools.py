@@ -423,14 +423,22 @@ async def check_semantic_alignment(
     try:
         client = rag_service._get_async_anthropic_client()
         system_prompt = (
-            "you are a SQL semantic validator. Return only a JSON object with two keys: "
-            'verdict ("pass" or "fail") and confidence (float 0.0-1.0). No markdown, no explanation.'
+            "You are a SQL semantic validator. Your job is to check whether a generated SQL query correctly answers the user's natural language question.\n\n"
+            "Evaluate the SQL on these dimensions:\n"
+            "- Does it answer the complete question, not just part of it?\n\n"
+            "- Does it group, filter, or order in a way that matches the user's intent?\n"
+            "Be reasonable - minor stylistic differences or extra columns do not constitute failure. "
+            "Fail only when the SQL would return results that do not answer the user's question, "
+            "or when a core part of the question is clearly missing from the SQL.\n\n"
+            "Return ONLY a JSON object with two keys:\n"
+            "- verdict: 'pass' or 'fail'\n"
+            "- confidence: float 0.0 to 1.0 representing how confident you are in the verdict\n\n"
+            "No markdown, no explanation outside the JSON."
         )
         user_prompt = (
             f"User Query: {query}\n\n"
             f"Schema Context:\n{schema_context}\n\n"
             f"Generated SQL:\n{sql}\n\n"
-            "Does the generated SQL correctly express the intent of the user query?"
         )
         response = await client.messages.create(
             model="claude-haiku-4-5-20251001",

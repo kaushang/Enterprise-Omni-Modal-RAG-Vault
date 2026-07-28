@@ -1,10 +1,9 @@
 from __future__ import annotations
-from dataclasses import dataclass, field
-from typing import Optional, Literal
-import uuid
 
-from typing import TypedDict, Annotated
 import operator
+import uuid
+from dataclasses import dataclass, field
+from typing import Annotated, Literal, Optional, TypedDict
 
 
 class AgentState(TypedDict):
@@ -48,6 +47,11 @@ class AgentState(TypedDict):
     db_connection_name: Optional[str]
     db_is_admin: bool
     context_error: Optional[str]
+
+    # --- Query Rewriter output ---
+    original_query: str
+    query_was_rewritten: bool
+    rewrite_diagnosis: dict
 
     # --- Query understanding ---
     query_plan: Optional[dict]
@@ -160,6 +164,9 @@ if __name__ == "__main__":
         db_connection_name=None,
         db_is_admin=False,
         context_error=None,
+        original_query="test",
+        query_was_rewritten=False,
+        rewrite_diagnosis={},
         query_plan=None,
         db_filtered_schema=None,
         generated_sql=None,
