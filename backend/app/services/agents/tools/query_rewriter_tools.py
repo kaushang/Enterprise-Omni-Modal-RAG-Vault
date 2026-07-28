@@ -1,6 +1,9 @@
 """
-Query Rewriter Tools definitions.
+Query Rewriter Tools definitions and implementations.
 """
+
+import app.services.rag_service as rag_service
+from app.services.agents.tools.utils import parse_json
 
 QUERY_REWRITER_TOOLS = [
     {
@@ -39,9 +42,24 @@ QUERY_REWRITER_TOOLS = [
                     "type": "string",
                     "description": "The original query to rewrite",
                 },
-                "strategy": {
-                    "type": "string",
-                    "description": "One of: disambiguate, correct, expand, both",
+                "strategies": {
+                    "type": "array",
+                    "items": {
+                        "type": "string",
+                        "enum": [
+                            "disambiguate",
+                            "correct",
+                            "expand",
+                            "resolve_followup",
+                        ],
+                    },
+                    "description": (
+                        "List of rewrite strategies to apply in a single pass. Pick one or more:\n"
+                        "- 'disambiguate': resolve vague references, pronouns without referents (them, it, those, same), or queries with multiple possible interpretations\n"
+                        "- 'correct': fix typos, spelling errors, and grammatical issues without changing meaning\n"
+                        "- 'expand': add missing context, specificity, or implicit constraints the user clearly intended\n"
+                        "- 'resolve_followup': use conversation history to rewrite a follow-up query into a fully self-contained standalone question\n"
+                    ),
                 },
                 "issues": {
                     "type": "array",
@@ -61,30 +79,127 @@ QUERY_REWRITER_TOOLS = [
             "required": ["query", "strategy", "issues", "suggested_actions"],
         },
     },
-    {
-        "name": "validate_rewrite",
-        "description": (
-            "Validates that the rewritten query preserves the original intent without adding assumptions the user never stated. "
-            "Returns pass/fail verdict with a reason. If failed, the original query should be used."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "original_query": {
-                    "type": "string",
-                    "description": "The original query before rewriting",
-                },
-                "rewritten_query": {
-                    "type": "string",
-                    "description": "The rewritten query to validate",
-                },
-                "issues": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "The issues that were being addressed by the rewrite",
-                },
-            },
-            "required": ["original_query", "rewritten_query", "issues"],
-        },
-    },
 ]
+
+
+async def assess_query_quality(query: str, conversation_history: str = "") -> dict:
+    print(f"[Query Rewriter] Assessing query: {query}")
+    try:
+        client = rag_service._get_async_anthropic_client()
+        system_prompt = (
+            "You are a query quality assessor. Return ONLY a JSON object with these keys:\n"
+            'issues: list from ["vague_entity","ambiguous_intent","typo","follow_up_without_context"]\n'
+            "confidence: float 0.0-1.0 (1.0=perfectly clear)\n"
+            'suggested_actions: list from ["correct_spelling","expand","disambiguate","resolve_followup","specify_entity"]\n'
+            "needs_rewrite: true if confidence<0.85 or issues non-empty\n\n"
+            "follow_up_without_context rules:\n"
+            "- Flag if query has pronouns/references with no in-query referent (them,they,it,those,same,that,these)\n"
+            "- Flag if query starts with: and,but,also,what about,same for\n"
+            "- Never flag a complete query with explicit subject and goal\n"
+            "- Follow-up: 'which of them performed best?', 'what about last month?'\n"
+            "- Not follow-up: 'Give a summary of orders per product category'\n"
+            "No markdown. No text outside JSON."
+        )
+
+        user_prompt = f"Query: {query}\n"
+        if conversation_history:
+            user_prompt += f"Conversation History:\n{conversation_history}\n"
+        user_prompt += "Assess whether this is a standalone clear query or a follow-up that needs context resolution."
+
+        response = await client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=512,
+            system=system_prompt,
+            messages=[{"role": "user", "content": user_prompt}],
+        )
+
+        raw_text = response.content[0].text if response.content else ""
+        print(
+            f"[Query Rewriter] Raw assessment response: {raw_text} and type: {type(raw_text)}"
+        )
+        parsed = parse_json(raw_text)
+        print(f"[Query Rewriter] Parsed result: {parsed} and type: {type(parsed)}")
+        if parsed and isinstance(parsed, dict):
+            issues = list(parsed.get("issues", []))
+            confidence = float(parsed.get("confidence", 1.0))
+            suggested_actions = list(parsed.get("suggested_actions", []))
+            needs_rewrite = bool(parsed.get("needs_rewrite", False))
+            print(
+                f"[Query Rewriter] Diagnosis: needs_rewrite={needs_rewrite}, confidence={confidence}, issues={issues}, suggested actions={suggested_actions}"
+            )
+            if not needs_rewrite:
+                print("[Query Rewriter] Query unchanged - already well-formed")
+            return {
+                "issues": issues,
+                "confidence": confidence,
+                "suggested_actions": suggested_actions,
+                "needs_rewrite": needs_rewrite,
+            }
+    except Exception as e:
+        print(f"[Query Rewriter] Exception in assess_query_quality: {e}")
+
+    return {
+        "issues": [],
+        "confidence": 1.0,
+        "suggested_actions": [],
+        "needs_rewrite": False,
+    }
+
+
+async def rewrite_query(
+    query: str,
+    strategies: list[str] | None = None,
+    issues: list | None = None,
+    suggested_actions: list | None = None,
+    conversation_history: str = "",
+) -> dict:
+    print(f"[Query Rewriter] Rewriting with strategy: {strategies}")
+    strategies = strategies or ["expand"]
+    issues = issues or []
+    suggested_actions = suggested_actions or []
+    try:
+        client = rag_service._get_async_anthropic_client()
+        system_prompt = (
+            "You are a query rewriter. Your job is to improve the given query based on the detected issues and strategy. Rules:\n\n"
+            "Never add assumptions the user did not state\n"
+            "Never change the core intent of the query, if the user asks more than 1 query, all of them should be addressed\n"
+            "For follow-up queries, use conversation history to make the query fully self-contained\n"
+            "For typo correction, fix spelling and grammar only, do not change meaning\n"
+            "For disambiguation, make implicit constraints explicit based only on what can be reasonably inferred\n"
+            "Return ONLY the rewritten query as plain text - no explanation, no preamble, no quotes"
+        )
+
+        user_prompt = (
+            f"Original Query: {query}\n"
+            f"Strategies: {strategies}\n"
+            f"Issues: {issues}\n"
+            f"Suggested Actions: {suggested_actions}\n"
+        )
+        if conversation_history:
+            user_prompt += f"Conversation History:\n{conversation_history}\n"
+        user_prompt += "Rewrite the query following the rules."
+
+        response = await client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=512,
+            system=system_prompt,
+            messages=[{"role": "user", "content": user_prompt}],
+        )
+
+        rewritten = response.content[0].text.strip() if response.content else query
+        if (rewritten.startswith('"') and rewritten.endswith('"')) or (
+            rewritten.startswith("'") and rewritten.endswith("'")
+        ):
+            rewritten = rewritten[1:-1].strip()
+        rewritten = rewritten if rewritten else query
+        print("[Query Rewriter] rewritten query: ", rewritten)
+        return {"rewritten_query": rewritten}
+    except Exception as e:
+        print(f"[Query Rewriter] Exception in rewrite_query: {e}")
+        return {"rewritten_query": query}
+
+
+QUERY_REWRITER_TOOL_REGISTRY: dict[str, callable] = {
+    "assess_query_quality": assess_query_quality,
+    "rewrite_query": rewrite_query,
+}

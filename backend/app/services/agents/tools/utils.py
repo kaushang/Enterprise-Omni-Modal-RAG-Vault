@@ -38,27 +38,28 @@ def parse_json(text: str, reason: str | None = None) -> dict | None:
 
     # Remove Markdown code block markers if the JSON is wrapped in them.
     if cleaned.startswith("```"):
-        cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned)
-        cleaned = re.sub(r"\s*```$", "", cleaned)
+        cleaned = re.sub(r"^```(?:json)?\s*\n?", "", cleaned)
+        cleaned = re.sub(r"\n?```$", "", cleaned.strip())
 
     # Try parsing the cleaned text directly as JSON.
     try:
         data = json.loads(cleaned)
-        if isinstance(data, dict) and reason in data:
-            return data
+        if isinstance(data, dict):
+            # Only validate key presence if reason is explicitly provided.
+            if reason is None or reason in data:
+                return data
     except Exception:
         pass
 
     # As a fallback, extract the first JSON object from the response.
     match = re.search(r"\{.*\}", text, re.DOTALL)
     if match:
-        # Try parsing the extracted JSON object.
         try:
             data = json.loads(match.group(0))
-            if isinstance(data, dict) and reason in data:
-                return data
+            if isinstance(data, dict):
+                if reason is None or reason in data:
+                    return data
         except Exception:
             pass
 
-    # Return None if no valid schema selection JSON could be parsed.
     return None
