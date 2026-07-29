@@ -75,7 +75,7 @@ class AgentState(TypedDict):
     tenant_id: Optional[str]
     authorized_doc_ids: Optional[list[str]]
 
-    # --- Fusion output ---
+    # --- Answer Generation output ---
     final_answer: str
     citations: list[dict]
     follow_up_questions: list[str]
@@ -87,6 +87,12 @@ class AgentState(TypedDict):
     was_fallback: bool
     fallback_model_name: Optional[str]
     execution_time_ms: int
+
+    # --- Answer Judge output ---
+    answer_judge_result: Optional[AnswerJudgeResult]
+    answer_judge_feedback: Optional[str]
+    answer_judge_attempts: int
+    low_confidence: bool
 
 
 # --- Agent result types ---
@@ -130,6 +136,16 @@ class RAGAgentResult:
     reformulated_query: Optional[str] = (
         None  # if agent reformulated the query during retry
     )
+
+
+@dataclass
+class AnswerJudgeResult:
+    passed: bool
+    reasoning: str
+    grounding_issues: list[str] = field(default_factory=list)
+    missing_intents: list[str] = field(default_factory=list)
+    feedback: Optional[str] = None
+    low_confidence: bool = False
 
 
 if __name__ == "__main__":
@@ -191,6 +207,10 @@ if __name__ == "__main__":
         was_fallback=False,
         fallback_model_name=None,
         execution_time_ms=0,
+        answer_judge_result=None,
+        answer_judge_feedback=None,
+        answer_judge_attempts=0,
+        low_confidence=False,
     )
     print("AgentState OK")
     print("LangGraph import OK")

@@ -1,7 +1,8 @@
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 
-from app.services.agents.nodes.fusion import fusion_node
+from app.services.agents.nodes.answer_generation_node import answer_generation_node
+from app.services.agents.nodes.answer_judge_node import answer_judge_node
 from app.services.agents.nodes.orchestrator import orchestrator_node
 from app.services.agents.nodes.query_rewriter import query_rewriter_node
 from app.services.agents.nodes.rag import rag_pipeline_node
@@ -24,15 +25,15 @@ def route_after_orchestrator(state: AgentState) -> list[str]:
     if state["invoke_rag"]:
         next_nodes.append("rag_pipeline_node")
     if not next_nodes:
-        # Safety fallback - should never happen but route to fusion if no agents selected
-        next_nodes.append("fusion_node")
+        # Safety fallback - should never happen but route to answer_generation_node if no agents selected
+        next_nodes.append("answer_generation_node")
     print(f"[Graph] Routing after orchestrator to: {next_nodes}")
     return next_nodes
 
 
 def route_after_sql_judge(state: AgentState) -> str:
     if state.get("sql_generation_error"):
-        print("[Graph] SQL generation failed. Skipping judge, routing to fusion.")
+        print("[Graph] SQL generation failed. Skipping judge, routing to answer_generation_node.")
         return "sql_failed"
 
     judge_result = state.get("judge_result")
@@ -60,7 +61,7 @@ def route_after_sql_judge(state: AgentState) -> str:
 
     if passed and not critical_hints:
         print(
-            "[Graph] SQL Judge approved query with no critical optimization issues. Routing to fusion."
+            "[Graph] SQL Judge approved query with no critical optimization issues. Routing to answer_generation_node."
         )
         return "sql_approved"
 
@@ -68,7 +69,7 @@ def route_after_sql_judge(state: AgentState) -> str:
     if retry_count > 1:
         print(
             f"[Graph] SQL Judge requested retry but max retries (1) reached (retry_count={retry_count}). "
-            "Routing to fusion with best available SQL."
+            "Routing to answer_generation_node with best available SQL."
         )
         return "sql_approved"
 
@@ -77,6 +78,32 @@ def route_after_sql_judge(state: AgentState) -> str:
         "Routing to sql_generation_node for retry."
     )
     return "sql_retry"
+
+
+def route_after_answer_judge(state: AgentState) -> str:
+    judge_res = state.get("answer_judge_result")
+    attempts = state.get("answer_judge_attempts", 0)
+
+    if not judge_res:
+        return "end"
+
+    passed = (
+        getattr(judge_res, "passed", True)
+        if hasattr(judge_res, "passed")
+        else (
+            judge_res.get("passed", True)
+            if isinstance(judge_res, dict)
+            else True
+        )
+    )
+
+    if passed:
+        return "end"
+
+    if attempts < 2:
+        return "retry"
+
+    return "end"
 
 
 def build_graph() -> StateGraph:
@@ -89,7 +116,8 @@ def build_graph() -> StateGraph:
     graph.add_node("sql_generation_node", sql_generation_node)
     graph.add_node("sql_judge_node", sql_judge_node)
     graph.add_node("rag_pipeline_node", rag_pipeline_node)
-    graph.add_node("fusion_node", fusion_node)
+    graph.add_node("answer_generation_node", answer_generation_node)
+    graph.add_node("answer_judge_node", answer_judge_node)
 
     # Entry point
     graph.add_edge(START, "query_rewriter_node")
@@ -102,7 +130,7 @@ def build_graph() -> StateGraph:
         {
             "sql_node": "schema_selection_node",
             "rag_pipeline_node": "rag_pipeline_node",
-            "fusion_node": "fusion_node",
+            "answer_generation_node": "answer_generation_node",
         },
     )
 
@@ -113,17 +141,27 @@ def build_graph() -> StateGraph:
         "sql_judge_node",
         route_after_sql_judge,
         {
-            "sql_approved": "fusion_node",
-            "sql_failed": "fusion_node",
+            "sql_approved": "answer_generation_node",
+            "sql_failed": "answer_generation_node",
             "sql_retry": "sql_generation_node",
         },
     )
 
-    # RAG path: rag_pipeline_node -> fusion_node
-    graph.add_edge("rag_pipeline_node", "fusion_node")
+    # RAG path: rag_pipeline_node -> answer_generation_node
+    graph.add_edge("rag_pipeline_node", "answer_generation_node")
 
-    # Fusion -> END
-    graph.add_edge("fusion_node", END)
+    # Answer Generation -> Answer Judge
+    graph.add_edge("answer_generation_node", "answer_judge_node")
+
+    # Route after answer judge: END or retry answer_generation_node
+    graph.add_conditional_edges(
+        "answer_judge_node",
+        route_after_answer_judge,
+        {
+            "end": END,
+            "retry": "answer_generation_node",
+        },
+    )
 
     return graph
 

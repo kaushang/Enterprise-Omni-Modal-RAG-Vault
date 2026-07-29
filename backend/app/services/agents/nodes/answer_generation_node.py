@@ -1,4 +1,4 @@
-# Fusion node - final answer generation
+# Answer Generation node - final answer generation
 
 import json
 import logging
@@ -22,7 +22,7 @@ async def _resolve_model_config(
     context_chunks: list[str] = None,
     has_attachments: bool = False,
 ):
-    print("[Fusion Agent] Resolving model config...")
+    print("[Answer Generation Agent] Resolving model config...")
     selected_model_string = "claude-haiku-4-5"
     selected_provider_id = "anthropic"
     model_config = None
@@ -89,7 +89,7 @@ async def _resolve_model_config(
             api_key="",
         )
     print(
-        f"[Fusion Agent] Model resolved: {selected_model_string} via {selected_provider_id}"
+        f"[Answer Generation Agent] Model resolved: {selected_model_string} via {selected_provider_id}"
     )
     return selected_model_string, selected_provider_id, model_config, db_model
 
@@ -97,7 +97,8 @@ async def _resolve_model_config(
 logger = logging.getLogger(__name__)
 
 
-async def fusion_node(state: AgentState) -> dict:
+async def answer_generation_node(state: AgentState) -> dict:
+    answer_judge_feedback = state.get("answer_judge_feedback")
     mode = state["mode"]
     sql_result = state.get("sql_result")
     rag_result = state.get("rag_result")
@@ -232,15 +233,27 @@ async def fusion_node(state: AgentState) -> dict:
 
             Answer the user's question using both sources above."""
 
-        print(f"[Fusion Node] Mode: {mode}")
+        if answer_judge_feedback is not None:
+            prompt += f"""
+
+        ---
+        RETRY INSTRUCTION:
+        A previous version of this answer was rejected. You must address the following issues:
+        {answer_judge_feedback}
+
+        Do not add any claims that are not directly supported by the retrieved context above.
+        Address every part of the user query explicitly.
+        ---"""
+
+        print(f"[Answer Generation Node] Mode: {mode}")
         print(
-            f"[Fusion Node] SQL result available: {bool(sql_result and sql_result.success)}"
+            f"[Answer Generation Node] SQL result available: {bool(sql_result and sql_result.success)}"
         )
         print(
-            f"[Fusion Node] RAG result available: {bool(rag_result and rag_result.success)}"
+            f"[Answer Generation Node] RAG result available: {bool(rag_result and rag_result.success)}"
         )
-        print(f"[Fusion Node] Model resolved: {selected_model_string}")
-        print("[Fusion Node] Calling LLM...")
+        print(f"[Answer Generation Node] Model resolved: {selected_model_string}")
+        print("[Answer Generation Node] Calling LLM...")
 
         max_tokens = 8192 if actual_mode in ("cross_source", "doc_only") else 4096
 
@@ -265,7 +278,7 @@ async def fusion_node(state: AgentState) -> dict:
 
         full_answer = "".join(full_answer_list).strip()
         print(
-            f"[Fusion Node] LLM complete. Input tokens: {input_tokens}, Output tokens: {output_tokens}"
+            f"[Answer Generation Node] LLM complete. Input tokens: {input_tokens}, Output tokens: {output_tokens}"
         )
 
         # Resolve final active model details (for usage logging and citations)
@@ -386,7 +399,7 @@ async def fusion_node(state: AgentState) -> dict:
                 )
 
         print(
-            f"[Fusion Node] Done. Answer length: {len(cleaned_answer)} chars, Citations: {len(citations)}"
+            f"[Answer Generation Node] Done. Answer length: {len(cleaned_answer)} chars, Citations: {len(citations)}"
         )
 
         return {
