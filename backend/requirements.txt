@@ -15,6 +15,7 @@ httpx
 qdrant-client
 sentence-transformers
 anthropic
+openai
 google-generativeai
 google-genai
 PyMuPDF

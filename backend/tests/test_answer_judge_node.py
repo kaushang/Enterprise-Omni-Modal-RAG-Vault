@@ -3,7 +3,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from app.services.agents.graph import route_after_answer_judge
 from app.services.agents.nodes.answer_judge_node import answer_judge_node
-from app.services.agents.types import AgentState, AnswerJudgeResult
+from app.services.agents.types import AnswerJudgeResult
 
 
 @pytest.mark.asyncio
@@ -136,11 +136,28 @@ async def test_answer_judge_error_soft_fallback():
 def test_route_after_answer_judge():
     # Passed
     res1 = AnswerJudgeResult(passed=True, reasoning="OK")
-    assert route_after_answer_judge({"answer_judge_result": res1, "answer_judge_attempts": 1}) == "end"
+    assert (
+        route_after_answer_judge(
+            {"answer_judge_result": res1, "answer_judge_attempts": 1}
+        )
+        == "end"
+    )
 
     # Failed, attempt 1 -> retry
-    res2 = AnswerJudgeResult(passed=False, reasoning="Missing info", feedback="Add info")
-    assert route_after_answer_judge({"answer_judge_result": res2, "answer_judge_attempts": 1}) == "retry"
+    res2 = AnswerJudgeResult(
+        passed=False, reasoning="Missing info", feedback="Add info"
+    )
+    assert (
+        route_after_answer_judge(
+            {"answer_judge_result": res2, "answer_judge_attempts": 1}
+        )
+        == "retry"
+    )
 
     # Failed, attempt 2 -> end
-    assert route_after_answer_judge({"answer_judge_result": res2, "answer_judge_attempts": 2}) == "end"
+    assert (
+        route_after_answer_judge(
+            {"answer_judge_result": res2, "answer_judge_attempts": 2}
+        )
+        == "end"
+    )

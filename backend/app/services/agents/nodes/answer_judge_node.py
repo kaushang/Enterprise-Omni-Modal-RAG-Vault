@@ -123,9 +123,7 @@ async def answer_judge_node(state: AgentState) -> dict:
         }
 
     except Exception as e:
-        logger.error(
-            f"[Answer Judge Node] Soft fallback triggered due to error: {e}"
-        )
+        logger.error(f"[Answer Judge Node] Soft fallback triggered due to error: {e}")
         judge_res = AnswerJudgeResult(
             passed=True,
             reasoning=f"Soft fallback due to error: {e}",

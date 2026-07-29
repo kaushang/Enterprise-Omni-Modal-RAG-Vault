@@ -152,7 +152,10 @@ async def test_database_to_document_fallback_translation_failure(db):
             "app.services.rag_service._execute_llm_stream", side_effect=mock_generator
         ),
         patch("app.services.rag_service._get_cross_encoder", return_value=None),
-        patch("app.services.agents.nodes.answer_generation_node.get_db_session", return_value=session),
+        patch(
+            "app.services.agents.nodes.answer_generation_node.get_db_session",
+            return_value=session,
+        ),
     ):
         events = []
         async for event in run_rag_pipeline(
@@ -267,7 +270,10 @@ async def test_database_to_document_fallback_empty_results(db):
             "app.services.rag_service._execute_llm_stream", side_effect=mock_generator
         ),
         patch("app.services.rag_service._get_cross_encoder", return_value=None),
-        patch("app.services.agents.nodes.answer_generation_node.get_db_session", return_value=session),
+        patch(
+            "app.services.agents.nodes.answer_generation_node.get_db_session",
+            return_value=session,
+        ),
     ):
         events = []
         async for event in run_rag_pipeline(
@@ -488,7 +494,10 @@ async def test_cross_source_fusion_success(db):
             "app.services.rag_service._execute_llm_stream", side_effect=mock_generator
         ),
         patch("app.services.rag_service._get_cross_encoder", return_value=None),
-        patch("app.services.agents.nodes.answer_generation_node.get_db_session", return_value=session),
+        patch(
+            "app.services.agents.nodes.answer_generation_node.get_db_session",
+            return_value=session,
+        ),
     ):
         events = []
         async for event in run_rag_pipeline(

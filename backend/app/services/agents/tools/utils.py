@@ -9,15 +9,17 @@ import re
 def format_tool_descriptions(tools: list[dict]) -> str:
     lines = []
     for tool in tools:
-        name = tool["name"]
-        description = tool["description"]
-        properties = tool["input_schema"].get("properties", {})
-        required = tool["input_schema"].get("required", [])
+        fn = tool.get("function", tool)
+        name = fn["name"]
+        description = fn.get("description", "")
+        schema = fn.get("parameters", fn.get("input_schema", {}))
+        properties = schema.get("properties", {})
+        required = schema.get("required", [])
 
         params = []
-        for param, schema in properties.items():
+        for param, schema_info in properties.items():
             req = "" if param in required else " (optional)"
-            params.append(f"  - {param}{req}: {schema.get('description', '')}")
+            params.append(f"  - {param}{req}: {schema_info.get('description', '')}")
 
         param_str = "\n".join(params) if params else "  - no parameters"
         lines.append(f"- {name}: {description}\n{param_str}")

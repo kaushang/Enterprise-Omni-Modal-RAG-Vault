@@ -33,7 +33,9 @@ def route_after_orchestrator(state: AgentState) -> list[str]:
 
 def route_after_sql_judge(state: AgentState) -> str:
     if state.get("sql_generation_error"):
-        print("[Graph] SQL generation failed. Skipping judge, routing to answer_generation_node.")
+        print(
+            "[Graph] SQL generation failed. Skipping judge, routing to answer_generation_node."
+        )
         return "sql_failed"
 
     judge_result = state.get("judge_result")
@@ -90,11 +92,7 @@ def route_after_answer_judge(state: AgentState) -> str:
     passed = (
         getattr(judge_res, "passed", True)
         if hasattr(judge_res, "passed")
-        else (
-            judge_res.get("passed", True)
-            if isinstance(judge_res, dict)
-            else True
-        )
+        else (judge_res.get("passed", True) if isinstance(judge_res, dict) else True)
     )
 
     if passed:
