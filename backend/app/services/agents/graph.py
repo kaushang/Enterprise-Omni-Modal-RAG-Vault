@@ -82,6 +82,28 @@ def route_after_sql_judge(state: AgentState) -> str:
     return "sql_retry"
 
 
+def _sql_returned_empty(state: AgentState) -> bool:
+    """Returns True if SQL was the only source, executed successfully, and returned no rows."""
+    sql_result = state.get("sql_result")
+    rag_result = state.get("rag_result")
+    sql_ok = bool(sql_result and sql_result.success)
+    sql_empty = sql_ok and not sql_result.query_results
+    rag_ok = bool(rag_result and rag_result.success)
+    return sql_empty and not rag_ok
+
+
+def route_after_answer_generation(state: AgentState) -> str:
+    """
+    Decide whether to run the answer judge or go straight to END.
+    Skip the judge when the answer was short-circuited due to empty SQL results -
+    the answer is deterministic in that case and there is nothing to judge.
+    """
+    if _sql_returned_empty(state):
+        print("[Graph] SQL returned 0 rows - skipping answer judge, routing to END.")
+        return "skip_judge"
+    return "judge"
+
+
 def route_after_answer_judge(state: AgentState) -> str:
     judge_res = state.get("answer_judge_result")
     attempts = state.get("answer_judge_attempts", 0)
@@ -145,11 +167,18 @@ def build_graph() -> StateGraph:
         },
     )
 
-    # RAG path: rag_pipeline_node -> answer_generation_node
+    # RAG path
     graph.add_edge("rag_pipeline_node", "answer_generation_node")
 
-    # Answer Generation -> Answer Judge
-    graph.add_edge("answer_generation_node", "answer_judge_node")
+    # Answer Generation -> conditionally route to judge or END
+    graph.add_conditional_edges(
+        "answer_generation_node",
+        route_after_answer_generation,
+        {
+            "judge": "answer_judge_node",
+            "skip_judge": END,
+        },
+    )
 
     # Route after answer judge: END or retry answer_generation_node
     graph.add_conditional_edges(

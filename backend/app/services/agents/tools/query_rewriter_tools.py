@@ -89,7 +89,7 @@ QUERY_REWRITER_TOOLS_OPENAI = [
 
 
 async def assess_query_quality(query: str = "", conversation_history: str = "") -> dict:
-    print(f"[Query Rewriter] Assessing query: {query}")
+    print(f"[Query Rewriter - assess_query_quality] Assessing query: {query}")
     try:
         # ANTHROPIC - restore when switching back to Claude
         # client = rag_service._get_async_anthropic_client()
@@ -132,11 +132,9 @@ async def assess_query_quality(query: str = "", conversation_history: str = "") 
         )
 
         raw_text = response.choices[0].message.content or ""
-        print(
-            f"[Query Rewriter] Raw assessment response: {raw_text} and type: {type(raw_text)}"
-        )
+
         parsed = parse_json(raw_text)
-        print(f"[Query Rewriter] Parsed result: {parsed} and type: {type(parsed)}")
+        print(f"[Query Rewriter - assess_query_quality] Result: {parsed}")
         if parsed and isinstance(parsed, dict):
             issues = list(parsed.get("issues", []))
             confidence = float(parsed.get("confidence", 1.0))
@@ -147,10 +145,12 @@ async def assess_query_quality(query: str = "", conversation_history: str = "") 
             # or explicit structural problems like typos and unresolved follow-ups.
             needs_rewrite = bool(issues) and confidence < 0.7
             print(
-                f"[Query Rewriter] Diagnosis: needs_rewrite={needs_rewrite}, confidence={confidence}, issues={issues}, suggested actions={suggested_actions}"
+                f"[Query Rewriter - assess_query_quality] Diagnosis: needs_rewrite={needs_rewrite}, confidence={confidence}, issues={issues}, suggested actions={suggested_actions}"
             )
             if not needs_rewrite:
-                print("[Query Rewriter] Query unchanged - already well-formed")
+                print(
+                    "[Query Rewriter - assess_query_quality] Query unchanged - already well-formed"
+                )
             return {
                 "issues": issues,
                 "confidence": confidence,
@@ -175,7 +175,7 @@ async def rewrite_query(
     suggested_actions: list | None = None,
     conversation_history: str = "",
 ) -> dict:
-    print(f"[Query Rewriter] Rewriting with strategy: {strategies}")
+    print(f"[Query Rewriter - rewrite_query] Rewriting with strategy: {strategies}")
     strategies = strategies or ["expand"]
     issues = issues or []
     suggested_actions = suggested_actions or []
@@ -230,7 +230,7 @@ async def rewrite_query(
         ):
             rewritten = rewritten[1:-1].strip()
         rewritten = rewritten if rewritten else query
-        print("[Query Rewriter] rewritten query: ", rewritten)
+        print("[Query Rewriter - rewrite_query] Rewritten Query: ", rewritten)
         return {"rewritten_query": rewritten}
     except Exception as e:
         print(f"[Query Rewriter] Exception in rewrite_query: {e}")

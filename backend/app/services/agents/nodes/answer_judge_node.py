@@ -1,6 +1,6 @@
 import logging
 
-import app.services.rag_service as rag_service
+from app.services.agents.ollama_client import OLLAMA_MODEL, get_ollama_client
 from app.services.agents.tools.utils import parse_json
 from app.services.agents.types import AgentState, AnswerJudgeResult
 
@@ -12,7 +12,13 @@ async def answer_judge_node(state: AgentState) -> dict:
     query = state.get("original_query") or state.get("query", "")
     final_answer = state.get("final_answer", "")
 
+    print(f"[Answer Judge] Attempt {attempts} | Query: {query[:120]}")
+    print(
+        f"[Answer Judge] Final answer length: {len(final_answer)} chars | Preview: {final_answer[:200]}"
+    )
+
     if not final_answer:
+        print("[Answer Judge] No final answer found - returning failed result")
         judge_res = AnswerJudgeResult(
             passed=False,
             reasoning="No final answer was synthesized by the answer generation node.",
@@ -34,6 +40,10 @@ async def answer_judge_node(state: AgentState) -> dict:
         "\n\n".join(context_parts)
         if context_parts
         else "No retrieved context available."
+    )
+
+    print(
+        f"[Answer Judge] Context sources - rag_result: {bool(state.get('rag_result'))}, sql_result: {bool(state.get('sql_result'))}"
     )
 
     system_prompt = (
@@ -62,20 +72,36 @@ async def answer_judge_node(state: AgentState) -> dict:
     )
 
     try:
-        client = rag_service._get_async_anthropic_client()
-        response = await client.messages.create(
-            model="claude-haiku-4-5-20251001",
-            max_tokens=1024,
-            system=system_prompt,
-            messages=[{"role": "user", "content": user_prompt}],
-        )
+        # ANTHROPIC - restore when switching back to Claude
+        # client = rag_service._get_async_anthropic_client()
+        # response = await client.messages.create(
+        #     model="claude-haiku-4-5-20251001",
+        #     max_tokens=1024,
+        #     system=system_prompt,
+        #     messages=[{"role": "user", "content": user_prompt}],
+        # )
+        # raw_text = ""
+        # for block in response.content:
+        #     if getattr(block, "type", None) == "text":
+        #         raw_text += block.text
 
-        raw_text = ""
-        for block in response.content:
-            if getattr(block, "type", None) == "text":
-                raw_text += block.text
+        client = get_ollama_client()
+        response = await client.chat.completions.create(
+            model=OLLAMA_MODEL,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            max_tokens=1024,
+        )
+        raw_text = response.choices[0].message.content or ""
+
+        print(f"[Answer Judge] Raw LLM response: {raw_text}")
 
         parsed_data = parse_json(raw_text)
+
+        print(f"[Answer Judge] Parsed result: {parsed_data}")
+
         if not parsed_data or not isinstance(parsed_data, dict):
             raise ValueError("Invalid or non-dict JSON response from Answer Judge LLM")
 
@@ -87,10 +113,18 @@ async def answer_judge_node(state: AgentState) -> dict:
         if feedback is not None:
             feedback = str(feedback)
 
+        print(
+            f"[Answer Judge] passed={passed} | grounding_issues={grounding_issues} | missing_intents={missing_intents}"
+        )
+        print(f"[Answer Judge] Feedback: {feedback}")
+
         # After parsing, if attempts >= 2 and passed is False:
         if attempts >= 2 and not passed:
             logger.warning(
                 "[Answer Judge Node] Max attempts reached. Passing answer with low_confidence=True."
+            )
+            print(
+                f"[Answer Judge] Max attempts ({attempts}) reached with passed=False - forcing low_confidence pass"
             )
             judge_res = AnswerJudgeResult(
                 passed=True,
@@ -107,6 +141,9 @@ async def answer_judge_node(state: AgentState) -> dict:
                 "low_confidence": True,
             }
 
+        print(
+            f"[Answer Judge] Returning result - passed={passed}, low_confidence=False"
+        )
         judge_res = AnswerJudgeResult(
             passed=passed,
             reasoning=reasoning,
@@ -124,6 +161,7 @@ async def answer_judge_node(state: AgentState) -> dict:
 
     except Exception as e:
         logger.error(f"[Answer Judge Node] Soft fallback triggered due to error: {e}")
+        print(f"[Answer Judge] Exception caught - soft fallback triggered: {e}")
         judge_res = AnswerJudgeResult(
             passed=True,
             reasoning=f"Soft fallback due to error: {e}",

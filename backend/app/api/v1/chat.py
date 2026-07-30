@@ -2,47 +2,46 @@
 Chat API routes — session management, RAG query, and private document upload.
 """
 
-import uuid
-import logging
 import json
+import logging
 import os
+import re
+import uuid
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, status
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from fastapi.responses import StreamingResponse
+from sqlalchemy import or_
 from sqlalchemy.orm import Session, joinedload
 
-from app.db.session import get_db
 from app.core.dependencies import get_current_user
-from app.models.user import User
+from app.db.session import get_db
+from app.models.available_model import AvailableModel
 from app.models.document import Document
-from app.models.query_session import QuerySession
-from app.models.query_message import QueryMessage
-from app.models.query_citation import QueryCitation
+from app.models.document_access_policy import DocumentAccessPolicy
 from app.models.enums import (
-    MessageRole,
     DocumentStatus,
+    MessageRole,
     OwnerType,
     Visibility,
 )
+from app.models.query_citation import QueryCitation
+from app.models.query_message import QueryMessage
+from app.models.query_session import QuerySession
+from app.models.user import User
 from app.schemas.chat import (
-    SessionResponse,
     CreateSessionResponse,
-    SessionDetailResponse,
+    ModelResponse,
     QueryRequest,
+    SessionDetailResponse,
+    SessionResponse,
     TranscriptionResponse,
 )
-from app.services.embedding_service import transcribe_audio
 from app.schemas.document import DocumentResponse
+from app.services.document_processor import process_document
+from app.services.embedding_service import transcribe_audio
 from app.services.rag_service import run_rag_pipeline
 from app.services.storage_service import save_file
-from app.services.document_processor import process_document
-import re
-from sqlalchemy import or_
-
-from app.models.document_access_policy import DocumentAccessPolicy
-from app.models.available_model import AvailableModel
-from app.schemas.chat import ModelResponse
 
 logger = logging.getLogger(__name__)
 
@@ -631,7 +630,9 @@ async def send_query(
                 else (resolved_model_id if resolved_model_id != "auto" else None),
                 follow_up_questions=follow_up_questions,
                 generated_sql=generated_sql,
-                query_results=query_results,
+                query_results=query_results
+                if isinstance(query_results, list)
+                else None,
                 chart_spec=chart_spec,
                 resolved_model=resolved_model if body.model_id == "auto" else None,
                 was_fallback=was_fallback,

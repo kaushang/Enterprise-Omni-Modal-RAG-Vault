@@ -6,10 +6,12 @@ import re
 import uuid
 
 import app.services.rag_service as rag_service
+from app.core.config import settings
 from app.core.utils import call_llm_with_fallback, extract_chart_spec
 from app.db.session import SessionLocal
 from app.models.available_model import AvailableModel
 from app.models.user import User
+from app.services.agents.gemini_client import GEMINI_MODEL
 from app.services.agents.types import AgentState
 from app.services.model_router import get_default_model_config, route_model
 
@@ -23,8 +25,11 @@ async def _resolve_model_config(
     has_attachments: bool = False,
 ):
     print("[Answer Generation Agent] Resolving model config...")
-    selected_model_string = "claude-haiku-4-5"
-    selected_provider_id = "anthropic"
+    # ANTHROPIC - restore when switching back to Claude
+    # selected_model_string = "claude-haiku-4-5"
+    # selected_provider_id = "anthropic"
+    selected_model_string = GEMINI_MODEL
+    selected_provider_id = "openai_compat"
     model_config = None
     db_model = None
 
@@ -83,10 +88,17 @@ async def _resolve_model_config(
             model_id = db_model.id
 
     if not model_config:
+        # ANTHROPIC - restore when switching back to Claude
+        # model_config = AvailableModel(
+        #     provider_id=selected_provider_id,
+        #     model_name=selected_model_string,
+        #     api_key="",
+        # )
         model_config = AvailableModel(
             provider_id=selected_provider_id,
             model_name=selected_model_string,
-            api_key="",
+            base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
+            api_key=settings.GEMINI_API_KEY
         )
     print(
         f"[Answer Generation Agent] Model resolved: {selected_model_string} via {selected_provider_id}"
@@ -150,10 +162,92 @@ async def answer_generation_node(state: AgentState) -> dict:
         if mode == "cross_source":
             sql_ok = bool(sql_result and sql_result.success)
             rag_ok = bool(rag_result and rag_result.success)
+            sql_has_rows = bool(sql_result and sql_result.query_results)
+
             if not sql_ok and not rag_ok or not sql_ok:
                 actual_mode = "doc_only"
             elif not rag_ok:
                 actual_mode = "db_only"
+            elif sql_ok and not sql_has_rows and rag_ok:
+                # SQL executed successfully but returned no rows - degrade to doc_only
+                # so the LLM is not given an empty SQL result block in the prompt
+                actual_mode = "doc_only"
+
+        # Short-circuit: if SQL ran successfully but returned no rows, skip the LLM entirely.
+        # The SQL was already validated by the judge - zero rows means no matching data, not a SQL error.
+        print(
+            f"[Answer Generation Node] sql_result="
+            f"exists={bool(sql_result)}, "
+            f"success={getattr(sql_result, 'success', 'MISSING')}, "
+            f"query_results type={type(getattr(sql_result, 'query_results', None)).__name__}, "
+            f"query_results value={getattr(sql_result, 'query_results', 'MISSING')!r}, "
+            f"formatted_results type={type(getattr(sql_result, 'formatted_results', None)).__name__}, "
+            f"formatted_results value={getattr(sql_result, 'formatted_results', 'MISSING')!r}, "
+            f"sql_query={getattr(sql_result, 'sql_query', 'MISSING')!r}"
+            "\n"
+            f"{sql_result}"
+        )
+        query_result = getattr(sql_result, "query_results", None)
+        sql_empty = bool(
+            sql_result
+            and sql_result.success
+            and (
+                not query_result
+                or not isinstance(query_result, list)
+                or len(query_result) == 0
+            )
+        )
+        if sql_empty and actual_mode == "db_only":
+            print(
+                "[Answer Generation Node] SQL returned 0 rows (db_only) - short-circuiting LLM call."
+            )
+            return {
+                "final_answer": "No data was found matching your query.",
+                "citations": [],
+                "follow_up_questions": [],
+                "chart_spec": None,
+                "generated_sql": sql_result.sql_query,
+                "query_results": None,
+                "model_string": selected_model_string,
+                "resolved_model": db_model.display_name
+                if db_model
+                else selected_model_string,
+                "resolved_model_id": str(db_model.id) if db_model else None,
+                "was_fallback": False,
+                "fallback_model_name": None,
+                "execution_time_ms": sql_result.execution_time_ms,
+                "db_connection_id": str(sql_result.connection_id)
+                if sql_result.connection_id
+                else None,
+            }
+
+        if (
+            sql_empty
+            and actual_mode == "cross_source"
+            and not (rag_result and rag_result.success)
+        ):
+            print(
+                "[Answer Generation Node] SQL returned 0 rows and RAG unavailable - short-circuiting LLM call."
+            )
+            return {
+                "final_answer": "No data was found matching your query.",
+                "citations": [],
+                "follow_up_questions": [],
+                "chart_spec": None,
+                "generated_sql": sql_result.sql_query,
+                "query_results": None,
+                "model_string": selected_model_string,
+                "resolved_model": db_model.display_name
+                if db_model
+                else selected_model_string,
+                "resolved_model_id": str(db_model.id) if db_model else None,
+                "was_fallback": False,
+                "fallback_model_name": None,
+                "execution_time_ms": sql_result.execution_time_ms,
+                "db_connection_id": str(sql_result.connection_id)
+                if sql_result.connection_id
+                else None,
+            }
 
         # Prompt construction
         if actual_mode == "db_only":
@@ -245,7 +339,7 @@ async def answer_generation_node(state: AgentState) -> dict:
         Address every part of the user query explicitly.
         ---"""
 
-        print(f"[Answer Generation Node] Mode: {mode}")
+        print(f"[Answer Generation Node] Mode: {mode}, Actual mode: {actual_mode}")
         print(
             f"[Answer Generation Node] SQL result available: {bool(sql_result and sql_result.success)}"
         )
@@ -411,7 +505,9 @@ async def answer_generation_node(state: AgentState) -> dict:
             "query_results": json.loads(
                 json.dumps(sql_result.query_results, default=str)
             )
-            if sql_result and sql_result.query_results
+            if sql_result
+            and sql_result.query_results
+            and isinstance(sql_result.query_results, list)
             else None,
             "model_string": selected_model_string,
             "resolved_model": db_model.display_name

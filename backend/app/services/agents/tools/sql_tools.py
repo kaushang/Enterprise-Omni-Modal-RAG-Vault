@@ -279,7 +279,7 @@ async def generate_sql(
         SQL Query:"""
 
     # Call the LLM to generate SQL
-    print(f"[SQL Generation] Prompting LLM with query: {query}")
+    print(f"[SQL Generation Agent - generate_sql] Prompting LLM with query: {query}")
     client = rag_service._get_async_anthropic_client()
     response = await client.messages.create(
         model="claude-haiku-4-5-20251001",
@@ -289,8 +289,6 @@ async def generate_sql(
         messages=[{"role": "user", "content": prompt}],
     )
     sql = response.content[0].text.strip()
-
-    print(f"[SQL Generation] LLM Response: {sql}")
 
     # SQL clearing: remove code block markers, comments, and ensure it starts with SELECT or WITH
     cleaned_sql = sql.strip()
@@ -313,10 +311,10 @@ async def generate_sql(
 
     first_non_comment_line = cleaned_lines[0].lower() if cleaned_lines else ""
     if not (first_non_comment_line.startswith(("select", "with", "explain"))):
-        print(f"[SQL Generation] Invalid SQL generated: {sql}")
+        print(f"[SQL Generation Agent - generate_sql] Invalid SQL generated: {sql}")
         raise ValueError(sql)
 
-    print(f"[SQL Generation] Cleaned SQL: {cleaned_sql}")
+    print(f"[SQL Generation Agent - generate_sql] Generated SQL: {cleaned_sql}")
     return cleaned_sql
 
 
@@ -393,9 +391,15 @@ def execute_sql(sql: str, connection_id: str, db) -> str:
             sql_query=sql,
         )
         execution_time_ms = int((time.perf_counter() - start_time) * 1000)
-        print(
-            f"[SQL Agent] Execution succeeded. Rows: {len(query_results)}, Time: {execution_time_ms}ms"
-        )
+
+        if sql.strip().upper().startswith("EXPLAIN"):
+            print(
+                f"[SQL Judge Agent - check_optimization] EXPLAIN plan fetched. Plan rows: {len(query_results)}, Time: {execution_time_ms}ms"
+            )
+        else:
+            print(
+                f"[SQL Generation Agent - execute_sql] Execution succeeded. Rows: {len(query_results)}, Time: {execution_time_ms}ms"
+            )
 
         # Return success response with results and metadata
         return json.dumps(
@@ -409,12 +413,8 @@ def execute_sql(sql: str, connection_id: str, db) -> str:
         )
 
     except Exception as exc:
-        print(f"[SQL Agent] Execution failed: {exc}")
+        print(f"[SQL Generation Agent - execute_sql] Execution failed: {exc}")
         return json.dumps({"success": False, "error": str(exc)})
-
-
-validate_sql = validate_sql
-execute_sql = execute_sql
 
 
 async def check_semantic_alignment(
@@ -462,6 +462,9 @@ async def check_semantic_alignment(
         verdict = str(data.get("verdict", "")).strip().lower()
         confidence = float(data.get("confidence", 0.5))
         passed = verdict == "pass" and confidence >= 0.6
+        print(
+            f"[SQL Judge Agent - check_semantic_alignment] Semantic Alignment Verdict: {passed}, confidence: {confidence}"
+        )
         return (passed, confidence)
     except Exception:
         return (True, 0.5)
@@ -665,26 +668,24 @@ async def check_optimization(
     )
 
     system_prompt = (
-        "You are a SQL optimization expert evaluating SQL queries and EXPLAIN execution plans.\n"
-        "Categorize optimization findings into two distinct categories: 'critical' and 'advisory'.\n\n"
-        "Critical hints - these trigger SQL regeneration:\n"
-        "- Subquery that causes a full table rescan visible in EXPLAIN output\n"
+        "You are a SQL optimization expert. Classify findings into critical or advisory.\n\n"
+        "CRITICAL (triggers SQL regeneration) - only flag if you can identify the exact clause and the correct rewrite:\n"
         "- Correlated subquery executing once per row\n"
-        "- Missing join condition causing a cartesian product\n"
-        "- HAVING filter that could be moved to WHERE to reduce rows before aggregation\n"
-        "- Subquery in SELECT or WHERE that can be replaced with a window function or JOIN with measurably better plan\n\n"
-        "Important Guidelines for Categorization:\n"
-        "- CTE-based queries (WITH clauses) are a valid and standard optimization pattern - do NOT flag them as critical unless EXPLAIN output explicitly shows repeated sequential scans with high cost\n"
-        "- Only flag something as critical if the EXPLAIN output confirms it, or if it is a textbook anti-pattern like a correlated subquery executing per row\n"
-        "- When no EXPLAIN output is available, be conservative - prefer advisory over critical categorization for anything that is not a clear textbook anti-pattern\n\n"
-        "Advisory hints - these are logged only, no regeneration:\n"
-        "- JOIN type preference (LEFT vs INNER) when the current results are correct\n"
-        "- Index suggestions - these are infrastructure level, not query rewrites\n"
-        "- Adding LIMIT when the user did not request it\n"
-        "- Minor readability or style improvements\n"
-        "- ORDER BY on aggregated columns when it is expected behavior\n\n"
-        "Return ONLY a JSON object with keys 'optimizable' (boolean), 'critical' (list of strings), and 'advisory' (list of strings). "
-        "No markdown, no preamble, no explanation outside the JSON."
+        "- Subquery forcing full table scan where a JOIN would avoid it (confirmed by EXPLAIN)\n"
+        "- Missing JOIN condition causing a cartesian product\n"
+        "- HAVING filter that belongs in WHERE (forces aggregation before filtering)\n"
+        "- N+1 pattern embedded in SQL\n\n"
+        "ADVISORY (logged only, no regeneration):\n"
+        "- Missing indexes (infrastructure, not a query change)\n"
+        "- LEFT JOIN that could be INNER when results are identical\n"
+        "- GROUP BY including columns functionally dependent on an already-present primary key\n"
+        "- SELECT * when specific columns suffice\n"
+        "- CTE vs subquery preference with equivalent plan cost\n\n"
+        "Rules:\n"
+        "- Without EXPLAIN, only flag critical for anti-patterns visible directly in the SQL. Do not speculate.\n"
+        "- Correct SQL that returns right results with acceptable performance should have empty critical list.\n"
+        "- A marginally faster alternative is not a critical issue.\n\n"
+        'Return ONLY JSON: {"optimizable": bool, "critical": [], "advisory": []}. No markdown, no text outside JSON.'
     )
 
     try:
@@ -714,6 +715,9 @@ async def check_optimization(
         if parsed.get("optimizable"):
             critical = parsed.get("critical", [])
             advisory = parsed.get("advisory", [])
+            print(
+                f"[SQL Judge Agent - check_optimization] critical optimizations: {critical}, advisories: {advisory}"
+            )
             return critical, advisory
 
         return [], []

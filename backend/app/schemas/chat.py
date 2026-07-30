@@ -95,17 +95,51 @@ class MessageResponse(BaseModel):
 
     model_config = {"from_attributes": True}
 
-    @field_validator(
-        "query_results", "follow_up_questions", "chart_spec", mode="before"
-    )
+    @field_validator("query_results", mode="before")
     @classmethod
-    def parse_json_fields(cls, v: Any) -> Any:
+    def validate_query_results(cls, v: Any) -> Optional[list[dict[str, Any]]]:
         if isinstance(v, str):
             try:
-                return json.loads(v)
+                v = json.loads(v)
             except Exception:
-                return v
-        return v
+                return None
+
+        if isinstance(v, dict):
+            return [v]
+
+        if isinstance(v, list):
+            valid_rows = [item for item in v if isinstance(item, dict)]
+            return valid_rows if valid_rows or len(v) == 0 else None
+
+        return None
+
+    @field_validator("follow_up_questions", mode="before")
+    @classmethod
+    def validate_follow_up_questions(cls, v: Any) -> Optional[list[str]]:
+        if isinstance(v, str):
+            try:
+                v = json.loads(v)
+            except Exception:
+                return None
+
+        if isinstance(v, list):
+            return [str(item) for item in v]
+
+        return None
+
+    @field_validator("chart_spec", mode="before")
+    @classmethod
+    def validate_chart_spec(cls, v: Any) -> Optional[dict[str, Any]]:
+        if isinstance(v, str):
+            try:
+                v = json.loads(v)
+            except Exception:
+                return None
+
+        if isinstance(v, dict):
+            return v
+
+        return None
 
     @model_validator(mode="before")
     @classmethod

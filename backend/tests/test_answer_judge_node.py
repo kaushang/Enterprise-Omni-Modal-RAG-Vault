@@ -29,17 +29,18 @@ async def test_answer_judge_passed():
         "rag_result": "Paris is the capital of France.",
     }
 
-    mock_response = AsyncMock()
-    mock_block = AsyncMock()
-    mock_block.type = "text"
-    mock_block.text = '{"passed": true, "reasoning": "Grounded and complete", "grounding_issues": [], "missing_intents": [], "feedback": null}'
-    mock_response.content = [mock_block]
+    mock_msg = AsyncMock()
+    mock_msg.content = '{"passed": true, "reasoning": "Grounded and complete", "grounding_issues": [], "missing_intents": [], "feedback": null}'
+    mock_choice = AsyncMock()
+    mock_choice.message = mock_msg
+    mock_resp = AsyncMock()
+    mock_resp.choices = [mock_choice]
 
     mock_client = AsyncMock()
-    mock_client.messages.create.return_value = mock_response
+    mock_client.chat.completions.create = AsyncMock(return_value=mock_resp)
 
     with patch(
-        "app.services.rag_service._get_async_anthropic_client",
+        "app.services.agents.nodes.answer_judge_node.get_ollama_client",
         return_value=mock_client,
     ):
         result = await answer_judge_node(state)
@@ -59,17 +60,18 @@ async def test_answer_judge_failed_first_attempt():
         "rag_result": "Paris is the capital of France.",
     }
 
-    mock_response = AsyncMock()
-    mock_block = AsyncMock()
-    mock_block.type = "text"
-    mock_block.text = '{"passed": false, "reasoning": "Missing population", "grounding_issues": [], "missing_intents": ["population"], "feedback": "Include population info."}'
-    mock_response.content = [mock_block]
+    mock_msg = AsyncMock()
+    mock_msg.content = '{"passed": false, "reasoning": "Missing population", "grounding_issues": [], "missing_intents": ["population"], "feedback": "Include population info."}'
+    mock_choice = AsyncMock()
+    mock_choice.message = mock_msg
+    mock_resp = AsyncMock()
+    mock_resp.choices = [mock_choice]
 
     mock_client = AsyncMock()
-    mock_client.messages.create.return_value = mock_response
+    mock_client.chat.completions.create = AsyncMock(return_value=mock_resp)
 
     with patch(
-        "app.services.rag_service._get_async_anthropic_client",
+        "app.services.agents.nodes.answer_judge_node.get_ollama_client",
         return_value=mock_client,
     ):
         result = await answer_judge_node(state)
@@ -89,17 +91,18 @@ async def test_answer_judge_max_attempts_force_pass():
         "rag_result": "Paris is the capital of France.",
     }
 
-    mock_response = AsyncMock()
-    mock_block = AsyncMock()
-    mock_block.type = "text"
-    mock_block.text = '{"passed": false, "reasoning": "Missing population", "grounding_issues": [], "missing_intents": ["population"], "feedback": "Include population info."}'
-    mock_response.content = [mock_block]
+    mock_msg = AsyncMock()
+    mock_msg.content = '{"passed": false, "reasoning": "Missing population", "grounding_issues": [], "missing_intents": ["population"], "feedback": "Include population info."}'
+    mock_choice = AsyncMock()
+    mock_choice.message = mock_msg
+    mock_resp = AsyncMock()
+    mock_resp.choices = [mock_choice]
 
     mock_client = AsyncMock()
-    mock_client.messages.create.return_value = mock_response
+    mock_client.chat.completions.create = AsyncMock(return_value=mock_resp)
 
     with patch(
-        "app.services.rag_service._get_async_anthropic_client",
+        "app.services.agents.nodes.answer_judge_node.get_ollama_client",
         return_value=mock_client,
     ):
         result = await answer_judge_node(state)
@@ -119,10 +122,12 @@ async def test_answer_judge_error_soft_fallback():
     }
 
     mock_client = AsyncMock()
-    mock_client.messages.create.side_effect = Exception("API connection failed")
+    mock_client.chat.completions.create = AsyncMock(
+        side_effect=Exception("API connection failed")
+    )
 
     with patch(
-        "app.services.rag_service._get_async_anthropic_client",
+        "app.services.agents.nodes.answer_judge_node.get_ollama_client",
         return_value=mock_client,
     ):
         result = await answer_judge_node(state)

@@ -1,5 +1,6 @@
 # SQL agent node and SQL judge node
 
+import inspect
 import json
 import re
 import uuid
@@ -40,6 +41,22 @@ def get_db_session():
     except Exception:
         db.close()
         raise
+
+
+def _to_openai_tools(anthropic_tools: list) -> list:
+    return [
+        {
+            "type": "function",
+            "function": {
+                "name": t["name"],
+                "description": t.get("description", ""),
+                "parameters": t.get(
+                    "input_schema", {"type": "object", "properties": {}, "required": []}
+                ),
+            },
+        }
+        for t in anthropic_tools
+    ]
 
 
 async def gather_sql_context(state: AgentState, db) -> dict:
@@ -253,7 +270,6 @@ async def schema_selection_node(state: AgentState) -> dict:
 
     messages = [{"role": "user", "content": user_prompt}]
     selected_table_names = []
-    agent_reasoning = ""
     reformat_attempted = False
 
     try:
@@ -303,7 +319,6 @@ async def schema_selection_node(state: AgentState) -> dict:
 
                 if parsed and "selected_tables" in parsed:
                     selected_table_names = parsed.get("selected_tables", [])
-                    agent_reasoning = parsed.get("reasoning", "")
                     break
 
                 # If JSON is invalid and we haven't tried reformatting yet, ask the model to reformat
@@ -371,8 +386,6 @@ async def schema_selection_node(state: AgentState) -> dict:
 
     chosen_names = [t.get("name") for t in filtered_schema.get("tables", [])]
     print(f"[Schema Intelligence Agent] Final Selected Tables: {chosen_names}")
-    if agent_reasoning:
-        print(f"[Schema Intelligence Agent] Reasoning: {agent_reasoning}")
 
     progress_msg = f"**Schema Intelligence Agent:** Selected table(s) `{', '.join(chosen_names)}` for query resolution.\n\n"
 
@@ -405,7 +418,8 @@ async def sql_generation_node(state: AgentState) -> dict:
 
         system_prompt = (
             "You are a SQL Agent operating in a ReAct (Reasoning + Acting) loop.\n"
-            "Your responsibility is to answer the user's database question by producing correct, authorized, and executable SQL.\n\n"
+            "Your responsibility is to answer the user's database question by producing correct, authorized, and executable SQL.\n"
+            "Whether the results are correct for the user's intent or not is evaluated separately by a judge agent after you finish.\n\n"
             f"Available tools:\n{format_tool_descriptions(SQL_GENERATION_TOOLS)}\n\n"
             "At each step, reason about what you know so far and decide what to do next.\n"
             "You decide the order, when to retry, and when you are confident enough to stop.\n\n"
@@ -414,6 +428,7 @@ async def sql_generation_node(state: AgentState) -> dict:
             "- When execution succeeds, stop and return ONLY this JSON with no extra text:\n"
             '{"final_sql": "the executed SQL", "results": "<first 10 rows only>", "execution_time_ms": 0}\n'
             "- The full result set is already stored externally. Include at most 10 rows in your response.\n"
+            "- A result with 0 rows is a successful execution. It means no data matches the query conditions, not that the SQL is wrong. No need to generate SQL again and again after recieving 0 rows as result.\n"
             "- If you cannot produce a working query after all attempts, return:\n"
             '{"final_sql": null, "results": null, "error": "reason why SQL could not be executed"}'
         )
@@ -467,10 +482,10 @@ async def sql_generation_node(state: AgentState) -> dict:
 
         async def generate_sql_fn_wrapper(**kwargs) -> dict:
             result = await generate_sql_fn(**kwargs)
-            print(f"[SQL Agent] Generated SQL: {result}")
+            # print(f"[SQL Generation Agent] Generated SQL: {result}")
             return {"sql": result}
 
-        def validate_sql_fn(sql: str = "") -> dict:
+        async def validate_sql_fn(sql: str = "") -> dict:
             if is_admin:
                 result = {"valid": True, "reason": ""}
             else:
@@ -483,10 +498,10 @@ async def sql_generation_node(state: AgentState) -> dict:
                         all_physical_cols_by_table=all_physical_cols_by_table,
                     )
                 )
-            print(f"[SQL Agent] Validation result: {result}")
+            print(f"[SQL Generation Agent] Validation result: {result}")
             return result
 
-        def execute_sql_fn(sql: str = "") -> dict:
+        async def execute_sql_fn(sql: str = "") -> dict:
             nonlocal last_executed_sql, last_executed_results, last_execution_time_ms
             result = json.loads(
                 execute_sql(
@@ -510,6 +525,7 @@ async def sql_generation_node(state: AgentState) -> dict:
         client = rag_service._get_async_anthropic_client()
 
         for turn in range(max_turns):
+            print("\n[SQL Generation Agent] Calling Agent...")
             response = await client.messages.create(
                 model="claude-haiku-4-5-20251001",
                 max_tokens=4096,
@@ -521,7 +537,9 @@ async def sql_generation_node(state: AgentState) -> dict:
             assistant_content = response.content
             messages.append({"role": "assistant", "content": assistant_content})
 
-            print(f"[SQL Agent] Turn {turn + 1}, stop_reason: {response.stop_reason}")
+            print(
+                f"[SQL Generation Agent] Turn {turn + 1}, stop_reason: {response.stop_reason}"
+            )
 
             # Agent decided it is done
             if response.stop_reason == "end_turn":
@@ -536,6 +554,8 @@ async def sql_generation_node(state: AgentState) -> dict:
                     parsed = json.loads(match.group(0))
                     final_sql = parsed.get("final_sql")
                     final_results = parsed.get("results")
+                    if not isinstance(final_results, list):
+                        final_results = None
                     execution_time_ms = parsed.get("execution_time_ms", 0)
                     agent_error = parsed.get("error")
                 break
@@ -554,7 +574,7 @@ async def sql_generation_node(state: AgentState) -> dict:
                 tool_name = block.name
                 tool_args = block.input or {}
 
-                print(f"[SQL Agent] Tool Call: {tool_name}({tool_args})")
+                print(f"[SQL Generation Agent] Calling tool: {tool_name}({tool_args})")
 
                 tool_fn = SQL_GENERATION_TOOL_REGISTRY.get(tool_name)
 
@@ -562,7 +582,11 @@ async def sql_generation_node(state: AgentState) -> dict:
                     if tool_fn is None:
                         raise ValueError(f"Unknown tool: {tool_name}")
 
-                    result = await tool_fn(**tool_args)
+                    res_or_coro = tool_fn(**tool_args)
+                    if inspect.isawaitable(res_or_coro):
+                        result = await res_or_coro
+                    else:
+                        result = res_or_coro
 
                     tool_results.append(
                         {
@@ -573,7 +597,9 @@ async def sql_generation_node(state: AgentState) -> dict:
                     )
 
                 except Exception as exc:
-                    print(f"[SQL Agent] Tool execution error ({tool_name}): {exc}")
+                    print(
+                        f"[SQL Generation Agent] Tool execution error ({tool_name}): {exc}"
+                    )
 
                     tool_results.append(
                         {
@@ -586,7 +612,7 @@ async def sql_generation_node(state: AgentState) -> dict:
             messages.append({"role": "user", "content": tool_results})
 
     except Exception as exc:
-        logger.warning(f"[SQL Agent] ReAct loop exception: {exc}")
+        logger.warning(f"[SQL Generation Agent] ReAct loop exception: {exc}")
         agent_error = str(exc)
     finally:
         db.close()
@@ -598,7 +624,7 @@ async def sql_generation_node(state: AgentState) -> dict:
         execution_time_ms = last_execution_time_ms
 
     if not final_sql:
-        print(f"[SQL Agent] Failed to produce SQL. Error: {agent_error}")
+        print(f"[SQL Generation Agent] Failed to produce SQL. Error: {agent_error}")
         return {
             "generated_sql": None,
             "sql_generation_error": agent_error or "SQL generation failed",
@@ -610,7 +636,6 @@ async def sql_generation_node(state: AgentState) -> dict:
             ),
         }
 
-    print(f"[SQL Agent] Final SQL: {final_sql}")
     return {
         "generated_sql": final_sql,
         "sql_generation_error": None,
@@ -658,7 +683,7 @@ async def sql_judge_node(state: AgentState) -> dict:
             )
             return {"passed": passed, "confidence": confidence}
 
-        def check_filters_fn(
+        async def check_filters_fn(
             query: str = query,
             sql: str = sql,
         ) -> dict:
@@ -683,6 +708,7 @@ async def sql_judge_node(state: AgentState) -> dict:
             "check_filters": check_filters_fn,
             "check_optimization": check_optimization_fn,
         }
+
         system_prompt = (
             "You are a SQL Judge Agent operating in a ReAct (Reasoning + Acting) loop.\n"
             "Your job is to evaluate the generated SQL against the user's natural language query using the available tools.\n\n"
@@ -690,6 +716,7 @@ async def sql_judge_node(state: AgentState) -> dict:
             "Rules:\n"
             "- You MUST call all three tools before making your final judgment.\n"
             "- Reason step-by-step about what tools to call.\n"
+            "- Do NOT generate corrected SQL or suggest rewrites. Your role is to judge only.\n"
             "- End your turn by returning ONLY a valid JSON object in this exact format with no extra commentary:\n"
             "{\n"
             '    "passed": true,\n'
@@ -790,7 +817,11 @@ async def sql_judge_node(state: AgentState) -> dict:
                     if tool_fn is None:
                         raise ValueError(f"Unknown tool: {tool_name}")
 
-                    result = await tool_fn(**tool_args)
+                    res_or_coro = tool_fn(**tool_args)
+                    if inspect.isawaitable(res_or_coro):
+                        result = await res_or_coro
+                    else:
+                        result = res_or_coro
 
                     tool_results.append(
                         {
@@ -804,7 +835,6 @@ async def sql_judge_node(state: AgentState) -> dict:
                     print(
                         f"[SQL Judge Agent] Tool execution error ({tool_name}): {exc}"
                     )
-
                     tool_results.append(
                         {
                             "type": "tool_result",

@@ -1,3 +1,4 @@
+import inspect
 import json
 
 from app.services.agents.ollama_client import OLLAMA_MODEL, get_ollama_client
@@ -58,6 +59,7 @@ async def query_rewriter_node(state: AgentState) -> dict:
             #     messages=messages,
             #     tools=QUERY_REWRITER_TOOLS,
             # )
+            print("[Query Rewriter] Calling query rewriter agent...")
             response = await client.chat.completions.create(
                 model=OLLAMA_MODEL,
                 messages=[{"role": "system", "content": system_prompt}] + messages,
@@ -95,10 +97,8 @@ async def query_rewriter_node(state: AgentState) -> dict:
             tool_use_blocks = choice.tool_calls or []
 
             if not tool_use_blocks:
-                print("[Query Rewriter Node] not tool_use_blocks")
                 full_text = " ".join(text_blocks)
                 parsed = parse_json(full_text)
-                print(f"[Query Rewriter Node] parsed {parsed}")
                 if parsed and "final_query" in parsed:
                     parsed_result = parsed
                     break
@@ -119,7 +119,8 @@ async def query_rewriter_node(state: AgentState) -> dict:
                     )
                     tool_fn = QUERY_REWRITER_TOOL_REGISTRY[tool_name]
                     try:
-                        result = await tool_fn(**tool_args)
+                        res = tool_fn(**tool_args)
+                        result = await res if inspect.isawaitable(res) else res
                         if tool_name == "assess_query_quality" and isinstance(
                             result, dict
                         ):
@@ -166,7 +167,9 @@ async def query_rewriter_node(state: AgentState) -> dict:
                 tool_fn = QUERY_REWRITER_TOOL_REGISTRY.get(tool_name)
                 if tool_fn:
                     try:
-                        result = await tool_fn(**tool_args)
+                        print(f"[Query Rewriter] Calling tool: {tool_name}")
+                        res = tool_fn(**tool_args)
+                        result = await res if inspect.isawaitable(res) else res
                         if tool_name == "assess_query_quality" and isinstance(
                             result, dict
                         ):
@@ -208,9 +211,7 @@ async def query_rewriter_node(state: AgentState) -> dict:
             res_diag = parsed_result.get("diagnosis")
             if not isinstance(res_diag, dict):
                 res_diag = diagnosis_saved
-            print(
-                f"[Query Rewriter Node] Final query: {res_fq}, was_rewritten: {res_rw}"
-            )
+            print(f"[Query Rewriter] Final query: {res_fq}, was_rewritten: {res_rw}")
             return {
                 "query": res_fq,
                 "original_query": original_query,
