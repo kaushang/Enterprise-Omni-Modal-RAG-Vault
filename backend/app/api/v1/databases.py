@@ -28,11 +28,12 @@ from app.services.database_service import (
     introspect_schema_live,
     encrypt_password,
     decrypt_password,
+    check_user_db_access,
+    get_user_filtered_schema,
 )
 from app.services.role_service import get_role_ancestors
 from app.services.audit_log_service import log_audit_event
 from app.core.dependencies import get_current_user
-from app.services.database_service import check_user_db_access
 
 logger = logging.getLogger(__name__)
 
@@ -255,6 +256,38 @@ def get_database_schema(
         .first()
     )
     return cache.schema_data if cache else {"tables": []}
+
+
+@router.get("/{id}/user-schema")
+def get_database_user_schema(
+    id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Get the filtered cached schema JSON of the database connection for the calling user.
+    """
+    conn = (
+        db.query(ExternalDatabaseConnection)
+        .filter(
+            ExternalDatabaseConnection.id == id,
+            ExternalDatabaseConnection.tenant_id == current_user.tenant_id,
+        )
+        .first()
+    )
+    if not conn:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Database connection not found",
+        )
+
+    cache = (
+        db.query(DatabaseSchemaCache)
+        .filter(DatabaseSchemaCache.connection_id == id)
+        .first()
+    )
+    raw_schema = cache.schema_data if cache else {"tables": []}
+    return get_user_filtered_schema(db, current_user, id, raw_schema)
 
 
 @router.put("/{id}", response_model=DatabaseConnectionResponse)

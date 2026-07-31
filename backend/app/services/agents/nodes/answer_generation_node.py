@@ -98,7 +98,7 @@ async def _resolve_model_config(
             provider_id=selected_provider_id,
             model_name=selected_model_string,
             base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
-            api_key=settings.GEMINI_API_KEY
+            api_key=settings.GEMINI_API_KEY,
         )
     print(
         f"[Answer Generation Agent] Model resolved: {selected_model_string} via {selected_provider_id}"

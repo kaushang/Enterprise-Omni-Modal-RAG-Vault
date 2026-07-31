@@ -508,3 +508,222 @@ def test_is_value_mismatch_error():
     # Generic error should be False
     other_err = Exception("Connection refused")
     assert is_value_mismatch_error("postgresql", other_err) is False
+
+
+def test_get_user_filtered_schema(db):
+    from app.services.database_service import get_user_filtered_schema
+
+    tenant_id = uuid.uuid4()
+    conn_id = uuid.uuid4()
+
+    role_admin = Role(id=uuid.uuid4(), tenant_id=tenant_id, name="Admin", is_admin=True)
+    role_user = Role(id=uuid.uuid4(), tenant_id=tenant_id, name="User", is_admin=False)
+    role_restricted = Role(
+        id=uuid.uuid4(), tenant_id=tenant_id, name="Restricted", is_admin=False
+    )
+    role_no_access = Role(
+        id=uuid.uuid4(), tenant_id=tenant_id, name="NoAccess", is_admin=False
+    )
+
+    db.add_all([role_admin, role_user, role_restricted, role_no_access])
+    db.commit()
+
+    admin_user = User(
+        id=uuid.uuid4(),
+        tenant_id=tenant_id,
+        email="admin@example.com",
+        full_name="Admin User",
+        hashed_password="pwd",
+        role_id=role_admin.id,
+    )
+    admin_user.role = role_admin
+
+    member_user = User(
+        id=uuid.uuid4(),
+        tenant_id=tenant_id,
+        email="user@example.com",
+        full_name="Member User",
+        hashed_password="pwd",
+        role_id=role_user.id,
+    )
+    member_user.role = role_user
+
+    restricted_user = User(
+        id=uuid.uuid4(),
+        tenant_id=tenant_id,
+        email="restricted@example.com",
+        full_name="Restricted User",
+        hashed_password="pwd",
+        role_id=role_restricted.id,
+    )
+    restricted_user.role = role_restricted
+
+    no_access_user = User(
+        id=uuid.uuid4(),
+        tenant_id=tenant_id,
+        email="noaccess@example.com",
+        full_name="No Access User",
+        hashed_password="pwd",
+        role_id=role_no_access.id,
+    )
+    no_access_user.role = role_no_access
+
+    db.add_all([admin_user, member_user, restricted_user, no_access_user])
+
+    # Policies for member_user: full table access to 'orders'
+    p1 = DatabaseAccessPolicy(
+        id=uuid.uuid4(),
+        connection_id=conn_id,
+        role_id=role_user.id,
+        table_name="orders",
+        columns=None,
+    )
+    # Policies for restricted_user: column-level access to 'orders' ('order_id', 'created_at')
+    p2 = DatabaseAccessPolicy(
+        id=uuid.uuid4(),
+        connection_id=conn_id,
+        role_id=role_restricted.id,
+        table_name="orders",
+        columns=["order_id", "created_at"],
+    )
+    db.add_all([p1, p2])
+    db.commit()
+
+    raw_schema = {
+        "tables": [
+            {
+                "name": "orders",
+                "columns": [
+                    {"name": "order_id", "type": "int"},
+                    {"name": "created_at", "type": "timestamp"},
+                    {"name": "secret_note", "type": "text"},
+                ],
+            },
+            {
+                "name": "customers",
+                "columns": [
+                    {"name": "customer_id", "type": "int"},
+                    {"name": "email", "type": "varchar"},
+                ],
+            },
+        ]
+    }
+
+    # 1. Admin gets all tables and columns
+    admin_res = get_user_filtered_schema(db, admin_user, conn_id, raw_schema)
+    assert len(admin_res["tables"]) == 2
+
+    # 2. Member user gets only 'orders' table with all 3 columns
+    member_res = get_user_filtered_schema(db, member_user, conn_id, raw_schema)
+    assert len(member_res["tables"]) == 1
+    assert member_res["tables"][0]["name"] == "orders"
+    assert len(member_res["tables"][0]["columns"]) == 3
+
+    # 3. Restricted user gets only 'orders' table with 2 permitted columns ('order_id', 'created_at')
+    restricted_res = get_user_filtered_schema(db, restricted_user, conn_id, raw_schema)
+    assert len(restricted_res["tables"]) == 1
+    assert restricted_res["tables"][0]["name"] == "orders"
+    res_cols = [c["name"] for c in restricted_res["tables"][0]["columns"]]
+    assert res_cols == ["order_id", "created_at"]
+
+    # 4. No access user gets empty tables list
+    no_access_res = get_user_filtered_schema(db, no_access_user, conn_id, raw_schema)
+    assert no_access_res == {"tables": []}
+
+
+def test_get_database_user_schema_endpoint(db):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from app.api.v1.databases import router as databases_router
+    from app.db.session import get_db
+    from app.core.dependencies import get_current_user
+    from app.models.external_database import DatabaseSchemaCache
+
+    test_app = FastAPI()
+    test_app.include_router(databases_router, prefix="/api/v1/databases")
+
+    tenant_id = uuid.uuid4()
+    conn_id = uuid.uuid4()
+
+    role_user = Role(id=uuid.uuid4(), tenant_id=tenant_id, name="User", is_admin=False)
+    db.add(role_user)
+    db.commit()
+
+    member_user = User(
+        id=uuid.uuid4(),
+        tenant_id=tenant_id,
+        email="user@example.com",
+        full_name="Member User",
+        hashed_password="pwd",
+        role_id=role_user.id,
+    )
+    member_user.role = role_user
+    db.add(member_user)
+
+    conn = ExternalDatabaseConnection(
+        id=conn_id,
+        tenant_id=tenant_id,
+        name="Production DB",
+        engine="postgresql",
+        host="localhost",
+        port=5432,
+        database_name="proddb",
+        username="postgres",
+        password=encrypt_password("pwd"),
+        status="active",
+    )
+    db.add(conn)
+
+    policy = DatabaseAccessPolicy(
+        id=uuid.uuid4(),
+        connection_id=conn_id,
+        role_id=role_user.id,
+        table_name="orders",
+        columns=["order_id"],
+    )
+    db.add(policy)
+
+    schema_cache = DatabaseSchemaCache(
+        connection_id=conn_id,
+        schema_data={
+            "tables": [
+                {
+                    "name": "orders",
+                    "columns": [
+                        {"name": "order_id", "type": "int"},
+                        {"name": "secret", "type": "text"},
+                    ],
+                },
+                {
+                    "name": "users",
+                    "columns": [{"name": "id", "type": "int"}],
+                },
+            ]
+        },
+    )
+    db.add(schema_cache)
+    db.commit()
+    db.refresh(member_user)
+    db.refresh(conn)
+
+    test_app.dependency_overrides[get_db] = lambda: db
+    test_app.dependency_overrides[get_current_user] = lambda: member_user
+
+    client = TestClient(test_app)
+
+    try:
+        # Test 200 success with filtered schema
+        response = client.get(f"/api/v1/databases/{conn_id}/user-schema")
+        assert response.status_code == 200
+        data = response.json()
+        assert len(data["tables"]) == 1
+        assert data["tables"][0]["name"] == "orders"
+        assert len(data["tables"][0]["columns"]) == 1
+        assert data["tables"][0]["columns"][0]["name"] == "order_id"
+
+        # Test 404 for non-existent connection id
+        non_existent_id = uuid.uuid4()
+        resp_404 = client.get(f"/api/v1/databases/{non_existent_id}/user-schema")
+        assert resp_404.status_code == 404
+    finally:
+        test_app.dependency_overrides.clear()

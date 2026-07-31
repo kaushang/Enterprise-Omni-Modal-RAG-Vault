@@ -578,6 +578,54 @@ def get_user_authorized_columns_for_table(
     return authorized_columns
 
 
+def get_user_filtered_schema(
+    db: Session, user: User, connection_id: uuid.UUID, raw_schema: Dict[str, Any]
+) -> Dict[str, Any]:
+    """
+    Filters a raw schema JSON structure based on the user's permissions and policies.
+    """
+    raw_tables = raw_schema.get("tables", []) if raw_schema else []
+    if user.role.is_admin:
+        return {"tables": raw_tables}
+
+    all_tables = [t["name"] for t in raw_tables if "name" in t]
+    authorized_table_names = get_user_authorized_tables(
+        db, user, connection_id, all_tables
+    )
+
+    if not authorized_table_names:
+        return {"tables": []}
+
+    policies = (
+        db.query(DatabaseAccessPolicy)
+        .filter(
+            DatabaseAccessPolicy.connection_id == connection_id,
+            DatabaseAccessPolicy.role_id == user.role_id,
+        )
+        .all()
+    )
+
+    authorized_tables_info = []
+    for t in raw_tables:
+        t_name = t.get("name")
+        if t_name in authorized_table_names:
+            all_cols = [c["name"] for c in t.get("columns", [])]
+            auth_cols = get_user_authorized_columns_for_table(
+                policies, t_name, all_cols
+            )
+
+            if auth_cols:
+                tbl_copy = dict(t)
+                tbl_copy["columns"] = [
+                    col
+                    for col in t.get("columns", [])
+                    if col["name"].lower() in auth_cols
+                ]
+                authorized_tables_info.append(tbl_copy)
+
+    return {"tables": authorized_tables_info}
+
+
 def check_sql_authorized_columns(
     sql_query: str,
     engine_type: str,
