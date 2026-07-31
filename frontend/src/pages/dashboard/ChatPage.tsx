@@ -25,7 +25,9 @@ import {
   Square,
   Database,
   Lock,
+  Table,
 } from "lucide-react";
+import { UserSchemaModal } from "../../components/UserSchemaModal";
 import { useAuthStore } from "../../store/authStore";
 import { chatService } from "../../services/chatService";
 import { documentService } from "../../services/documentService";
@@ -258,6 +260,7 @@ const ChatPage: React.FC = () => {
   >(null);
   const [isDbDropdownOpen, setIsDbDropdownOpen] = useState(false);
   const dbDropdownRef = useRef<HTMLDivElement>(null);
+  const [isSchemaModalOpen, setIsSchemaModalOpen] = useState(false);
 
   // Load available models
   useEffect(() => {
@@ -2494,6 +2497,32 @@ const ChatPage: React.FC = () => {
                               />
                             )}
                           </button>
+                          {/* View Schema Button */}
+                          <div className="relative group">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                if (attachedDatabase) {
+                                  setIsSchemaModalOpen(true);
+                                }
+                              }}
+                              disabled={!attachedDatabase}
+                              className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-white dark:bg-slate-900 text-slate-650 dark:text-slate-350 transition-all font-semibold text-sm outline-none border border-slate-200/80 dark:border-slate-800 ${
+                                !attachedDatabase
+                                  ? "opacity-50 cursor-not-allowed"
+                                  : "hover:bg-slate-50 dark:hover:bg-slate-800 hover:text-indigo-600 dark:hover:text-indigo-400 cursor-pointer shadow-xs"
+                              }`}
+                              title={!attachedDatabase ? "Select a database first" : "View schema for this database"}
+                            >
+                              <Table className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400" />
+                              <span>View Schema</span>
+                            </button>
+                            {!attachedDatabase && (
+                              <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1.5 hidden group-hover:block whitespace-nowrap px-2 py-1 bg-slate-800 dark:bg-slate-700 text-white text-[11px] font-medium rounded shadow-md z-50 pointer-events-none">
+                                Select a database first
+                              </div>
+                            )}
+                          </div>
                           {lockedDbConnectionId && (
                             <span className="text-xs text-slate-400 dark:text-slate-500 font-medium select-none">
                               Locked to this chat
@@ -2628,6 +2657,12 @@ const ChatPage: React.FC = () => {
           </div>
         </div>
       </div>
+      <UserSchemaModal
+        isOpen={isSchemaModalOpen}
+        onClose={() => setIsSchemaModalOpen(false)}
+        connectionId={attachedDatabase?.id || null}
+        connectionName={attachedDatabase?.name || ""}
+      />
     </div>
   );
 };

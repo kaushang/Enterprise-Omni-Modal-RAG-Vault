@@ -75,6 +75,12 @@ export const databaseService = {
     return response.data;
   },
 
+  getUserSchema: async (id: string): Promise<any> => {
+    const response = await api.get(`/api/v1/databases/${id}/user-schema`);
+    return response.data;
+  },
+
+
   createDatabase: async (
     data: DatabaseConnectionCreatePayload,
   ): Promise<DatabaseConnectionResponse> => {
