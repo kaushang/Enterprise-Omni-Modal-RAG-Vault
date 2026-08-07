@@ -149,7 +149,7 @@ export const CollectionsSidebar: React.FC<CollectionsSidebarProps> = ({
   };
 
   return (
-    <div className="w-56 shrink-0 flex flex-col border-r border-slate-200 dark:border-slate-800 pr-4 select-none">
+    <div className="w-56 shrink-0 flex flex-col border-slate-200 dark:border-slate-800 select-none sticky top-0 self-start">
       {/* Header */}
       <div className="flex items-center justify-between mb-4 px-2">
         <span className="text-sm font-semibold text-slate-900 dark:text-slate-200">
@@ -158,7 +158,7 @@ export const CollectionsSidebar: React.FC<CollectionsSidebarProps> = ({
         {isAdmin && (
           <button
             onClick={() => setIsCreating(true)}
-            className="p-1 rounded-md text-slate-900 hover:text-slate-600 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+            className="p-1 rounded-md text-slate-900 dark:text-slate-200 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
             title="Create new collection"
           >
             <Plus className="w-4 h-4" />
@@ -170,28 +170,28 @@ export const CollectionsSidebar: React.FC<CollectionsSidebarProps> = ({
       <div className="space-y-1">
         <button
           onClick={() => onFilterChange({ type: "all" })}
-          className={`w-full flex items-center justify-between p-2 text-sm font-medium rounded-xl transition-all ${
+          className={`w-full flex items-center p-2 text-sm font-medium rounded-xl transition-all gap-2 ${
             selectedFilter.type === "all"
               ? "bg-indigo-50 dark:bg-indigo-950/50 text-indigo-700 dark:text-indigo-400"
               : "text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800/50 hover:text-slate-900 dark:hover:text-white"
           }`}
         >
           <span>All Documents</span>
-          <span className="text-xs px-2 py-0.5 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 border border-slate-250/20">
+          <span className="inline-flex items-center justify-center min-w-4 h-4 px-1 text-[10px] font-semibold rounded-full bg-indigo-200 dark:bg-indigo-800/50 dark:text-slate-300">
             {totalDocuments}
           </span>
         </button>
 
         <button
           onClick={() => onFilterChange({ type: "uncategorized" })}
-          className={`w-full flex items-center justify-between p-2 text-sm font-medium rounded-xl transition-all ${
+          className={`w-full flex items-center p-2 text-sm font-medium rounded-xl transition-all gap-2 ${
             selectedFilter.type === "uncategorized"
               ? "bg-indigo-50 dark:bg-indigo-950/50 text-indigo-700 dark:text-indigo-400"
               : "text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800/50 hover:text-slate-900 dark:hover:text-white"
           }`}
         >
           <span>Uncategorized</span>
-          <span className="text-xs px-2 py-0.5 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 border border-slate-250/20">
+          <span className="inline-flex items-center justify-center min-w-4 h-4 px-1 text-[10px] font-semibold rounded-full bg-indigo-200 dark:bg-indigo-800/50 dark:text-slate-300">
             {uncategorizedCount}
           </span>
         </button>
@@ -230,17 +230,18 @@ export const CollectionsSidebar: React.FC<CollectionsSidebarProps> = ({
                     className="flex-1 flex items-center gap-2 p-2 text-sm text-left overflow-hidden min-w-0"
                   >
                     <Folder className="w-4 h-4 shrink-0 text-slate-400 dark:text-slate-500" />
-                    <span className="truncate flex-1" title={col.name}>
-                      {col.name}
-                    </span>
+                    <div className="flex items-center gap-2 flex-1 min-w-0">
+                      <span className="truncate" title={col.name}>
+                        {col.name}
+                      </span>
+
+                      <span className="inline-flex items-center justify-center px-0.5 min-w-4 h-4 text-[10px] font-semibold rounded-full bg-indigo-200 dark:bg-indigo-800/50 dark:text-slate-300">
+                        {col.document_count}
+                      </span>
+                    </div>
                   </button>
 
                   <div className="flex items-center pr-2 shrink-0 gap-1.5">
-                    {/* Badge */}
-                    <span className="text-xs px-1.5 py-0.5 rounded-full bg-slate-100 dark:bg-slate-850 text-slate-500 dark:text-slate-400 transition-opacity group-hover:opacity-0 group-focus-within:opacity-0 border border-slate-250/20">
-                      {col.document_count}
-                    </span>
-
                     {/* Admin Actions Button */}
                     {isAdmin && (
                       <button
@@ -250,7 +251,7 @@ export const CollectionsSidebar: React.FC<CollectionsSidebarProps> = ({
                             activeMenuId === col.id ? null : col.id,
                           );
                         }}
-                        className="p-1 rounded text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-350 opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity"
+                        className="p-1 rounded-full text-slate-500 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-350 group-hover:opacity-100 focus:opacity-100 transition-opacity hover:bg-slate-100 hover:dark:hover:bg-slate-800"
                       >
                         <MoreVertical className="w-3.5 h-3.5" />
                       </button>
@@ -280,7 +281,7 @@ export const CollectionsSidebar: React.FC<CollectionsSidebarProps> = ({
                           setDeleteConfirmId(col.id);
                           setActiveMenuId(null);
                         }}
-                        className="w-full text-left px-3 py-2 text-xs text-red-650 hover:bg-red-50 dark:hover:bg-red-950/20 transition-colors"
+                        className="w-full text-left px-3 py-2 text-xs text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors"
                       >
                         Delete
                       </button>
@@ -292,7 +293,7 @@ export const CollectionsSidebar: React.FC<CollectionsSidebarProps> = ({
               {/* Inline Renaming Input */}
               {isRenaming && (
                 <div className="px-1.5 py-1">
-                  <div className="flex items-center gap-1.5 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl px-2 py-1 focus-within:ring-2 focus-within:ring-indigo-400">
+                  <div className="flex items-center gap-1.5 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg px-2 py-1 focus-within:ring-2 focus-within:ring-indigo-400">
                     <input
                       ref={renameInputRef}
                       type="text"
@@ -330,9 +331,10 @@ export const CollectionsSidebar: React.FC<CollectionsSidebarProps> = ({
 
               {/* Inline Deletion Confirmation */}
               {isConfirmingDelete && (
-                <div className="bg-red-50/40 dark:bg-red-950/10 border border-red-200/50 dark:border-red-900/30 rounded-xl p-2.5 mx-1 my-1 text-xs">
+                <div className="bg-red-50/40 dark:bg-red-950/10 border border-red-200/50 dark:border-red-900/20 rounded-xl p-2.5 mx-1 my-1 text-xs">
                   <p className="text-slate-600 dark:text-slate-400 mb-2 leading-relaxed">
-                    Delete this collection? Documents will be uncategorized.
+                    Delete this collection? Documents inside this will be{" "}
+                    <strong>uncategorized</strong>.
                   </p>
                   <div className="flex items-center gap-1.5">
                     <button
@@ -359,7 +361,7 @@ export const CollectionsSidebar: React.FC<CollectionsSidebarProps> = ({
         {/* Inline Create Input */}
         {isCreating && (
           <div className="px-1.5 py-1">
-            <div className="flex items-center gap-1.5 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl px-2 py-1 focus-within:ring-2 focus-within:ring-indigo-400">
+            <div className="flex items-center gap-1.5 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg px-2 py-1 focus-within:ring-2 focus-within:ring-indigo-400">
               <input
                 ref={createInputRef}
                 type="text"
