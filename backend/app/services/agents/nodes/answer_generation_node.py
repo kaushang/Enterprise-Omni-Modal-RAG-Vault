@@ -5,13 +5,12 @@ import logging
 import re
 import uuid
 
-import app.services.rag_service as rag_service
 from app.core.config import settings
 from app.core.utils import call_llm_with_fallback, extract_chart_spec
 from app.db.session import SessionLocal
 from app.models.available_model import AvailableModel
 from app.models.user import User
-from app.services.agents.gemini_client import GEMINI_MODEL
+from app.services import rag_service
 from app.services.agents.types import AgentState
 from app.services.model_router import get_default_model_config, route_model
 
@@ -21,15 +20,12 @@ async def _resolve_model_config(
     db,
     user,
     query: str = "",
-    context_chunks: list[str] = None,
+    context_chunks: list[str] | None = None,
     has_attachments: bool = False,
 ):
     print("[Answer Generation Agent] Resolving model config...")
-    # ANTHROPIC - restore when switching back to Claude
-    # selected_model_string = "claude-haiku-4-5"
-    # selected_provider_id = "anthropic"
-    selected_model_string = GEMINI_MODEL
-    selected_provider_id = "openai_compat"
+    selected_model_string = "cohere/north-mini-code:free"
+    selected_provider_id = "openrouter"
     model_config = None
     db_model = None
 
@@ -71,10 +67,14 @@ async def _resolve_model_config(
             )
 
         if db_model:
-            selected_model_string = db_model.model_name or db_model.model_string
+            selected_model_string = (
+                db_model.model_name
+                or getattr(db_model, "model_string", None)
+                or selected_model_string
+            )
             selected_provider_id = db_model.provider_id
             if not selected_provider_id:
-                provider_val = db_model.provider
+                provider_val = getattr(db_model, "provider", None)
                 if hasattr(provider_val, "value"):
                     provider_val = provider_val.value
                 if provider_val == "anthropic":
@@ -88,17 +88,11 @@ async def _resolve_model_config(
             model_id = db_model.id
 
     if not model_config:
-        # ANTHROPIC - restore when switching back to Claude
-        # model_config = AvailableModel(
-        #     provider_id=selected_provider_id,
-        #     model_name=selected_model_string,
-        #     api_key="",
-        # )
         model_config = AvailableModel(
             provider_id=selected_provider_id,
             model_name=selected_model_string,
-            base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
-            api_key=settings.GEMINI_API_KEY,
+            base_url="https://openrouter.ai/api/v1",
+            api_key=settings.OPENROUTER_API_KEY or "",
         )
     print(
         f"[Answer Generation Agent] Model resolved: {selected_model_string} via {selected_provider_id}"

@@ -1,4 +1,3 @@
-import asyncio
 import os
 import sys
 import types
@@ -10,12 +9,9 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 # If app.services.agents.graph cannot be imported directly due to uncommitted working tree changes,
 # provide a dummy module so test collection and isolated unit testing succeed cleanly.
 if "app.services.agents.graph" not in sys.modules:
-    try:
-        import app.services.agents.graph
-    except Exception:
-        dummy_graph_mod = types.ModuleType("app.services.agents.graph")
-        dummy_graph_mod.rag_graph = MagicMock()
-        sys.modules["app.services.agents.graph"] = dummy_graph_mod
+    dummy_graph_mod = types.ModuleType("app.services.agents.graph")
+    dummy_graph_mod.rag_graph = MagicMock()
+    sys.modules["app.services.agents.graph"] = dummy_graph_mod
 
 import pytest
 from app.db.base import Base
@@ -29,7 +25,6 @@ from app.services.agents.types import RAGAgentResult
 from scripts.run_inference import (
     build_initial_state,
     extract_contexts,
-    main,
     run_single_inference,
 )
 from sqlalchemy import create_engine

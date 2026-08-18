@@ -13,8 +13,7 @@ from RestrictedPython.Eval import (
 )
 from RestrictedPython.Guards import guarded_iter_unpack_sequence
 
-import app.services.rag_service as rag_service
-from app.services import embedding_service
+from app.services import embedding_service, rag_service
 from app.services.agents.gemini_client import GEMINI_MODEL, get_gemini_client
 
 logger = rag_service.logger
@@ -597,7 +596,7 @@ async def execute_pandas_code_tool(
         print(f"[Excel Agent] Execution succeeded for {doc.filename}")
 
         # Format the raw result into a clear answer for the user query
-        formatted = f"Question: {query}\nAnswer: {str(raw_result)}"
+        formatted = f"Question: {query}\nAnswer: {raw_result!s}"
         return {
             "filename": doc.filename,
             "document_id": str(doc.id),

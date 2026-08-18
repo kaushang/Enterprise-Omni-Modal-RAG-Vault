@@ -46,15 +46,7 @@ import logging
 import os
 import sys
 import uuid
-from typing import Any, Optional
-
-from dotenv import find_dotenv, load_dotenv
-
-# Ensure the backend directory is in sys.path
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-# Load environment variables from .env
-load_dotenv(find_dotenv())
+from typing import Any
 
 from app.db.session import SessionLocal
 from app.models.ragas import (
@@ -64,22 +56,32 @@ from app.models.ragas import (
 )
 from app.services.agents.graph import rag_graph
 from app.services.agents.types import AgentState
+from dotenv import find_dotenv, load_dotenv
 from sqlalchemy.orm import Session
+
+# Ensure the backend directory is in sys.path
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+# Load environment variables from .env
+load_dotenv(find_dotenv())
+
 
 # ---------------------------------------------------------------------------
 # Configuration Variables
 # ---------------------------------------------------------------------------
 TENANT_ID = "c2a35f4c-4a7d-4084-939a-f8cadd71045d"
-USER_ID = "6a759485-4654-497e-8059-c429edcbdd9e"  # a real user UUID belonging to the tenant
+USER_ID = (
+    "6a759485-4654-497e-8059-c429edcbdd9e"  # a real user UUID belonging to the tenant
+)
 RUN_NAME = "eval-run-1"
 
 # ---------------------------------------------------------------------------
 # Manual / Interactive Execution Controls
 # ---------------------------------------------------------------------------
 INTERACTIVE_MODE = False  # Set to True to prompt before running each question
-QUESTION_INDEX = None    # Set to a 1-based index (e.g., 1) to run ONLY that question
-LIMIT = 2            # Set to an integer (e.g., 1) to run only the first N questions
-START_INDEX = 29          # 1-based start index (e.g., start from question 5)
+QUESTION_INDEX = None  # Set to a 1-based index (e.g., 1) to run ONLY that question
+LIMIT = 10  # Set to an integer (e.g., 1) to run only the first N questions
+START_INDEX = 21  # 1-based start index (e.g., start from question 5)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -93,7 +95,8 @@ def parse_args():
         description="Run RAG pipeline inference on testset questions."
     )
     parser.add_argument(
-        "--interactive", "-i",
+        "--interactive",
+        "-i",
         action="store_true",
         default=None,
         help="Run questions interactively with step-by-step confirmation.",
@@ -105,13 +108,15 @@ def parse_args():
         help="Run only a single specific 1-based question index (e.g., --index 1).",
     )
     parser.add_argument(
-        "--limit", "-l",
+        "--limit",
+        "-l",
         type=int,
         default=None,
         help="Limit the total number of questions to process (e.g., --limit 1).",
     )
     parser.add_argument(
-        "--start", "-s",
+        "--start",
+        "-s",
         type=int,
         default=None,
         help="1-based index to start processing from (e.g., --start 5).",
@@ -129,7 +134,7 @@ def build_initial_state(
     query: str,
     tenant_id: str,
     user_id: str,
-    session_id: Optional[str] = None,
+    session_id: str | None = None,
 ) -> AgentState:
     """
     Construct initial_state exactly as the FastAPI route and rag_service do.
@@ -284,16 +289,16 @@ async def run_single_inference(
 async def main() -> None:
     # Read CLI arguments if provided, falling back to top-level constants
     cli_args = parse_args() if "pytest" not in sys.modules else None
-    
+
     interactive = (
-        cli_args.interactive if (cli_args and cli_args.interactive is not None) else INTERACTIVE_MODE
+        cli_args.interactive
+        if (cli_args and cli_args.interactive is not None)
+        else INTERACTIVE_MODE
     )
     target_index = (
         cli_args.index if (cli_args and cli_args.index is not None) else QUESTION_INDEX
     )
-    limit = (
-        cli_args.limit if (cli_args and cli_args.limit is not None) else LIMIT
-    )
+    limit = cli_args.limit if (cli_args and cli_args.limit is not None) else LIMIT
     start_idx = (
         cli_args.start if (cli_args and cli_args.start is not None) else START_INDEX
     )
@@ -304,7 +309,9 @@ async def main() -> None:
     if target_index:
         logger.info(f"Target: Running ONLY Question #{target_index}")
     elif limit:
-        logger.info(f"Limit: Processing maximum {limit} question(s) starting from #{start_idx}")
+        logger.info(
+            f"Limit: Processing maximum {limit} question(s) starting from #{start_idx}"
+        )
 
     # Validate configuration parameters
     if not TENANT_ID or TENANT_ID == "your-tenant-uuid-here":
@@ -398,7 +405,9 @@ async def main() -> None:
             db.refresh(eval_run)
             logger.info(f"Created new evaluation run '{run_name}' (ID: {eval_run.id})")
         else:
-            logger.info(f"Using existing evaluation run '{run_name}' (ID: {eval_run.id})")
+            logger.info(
+                f"Using existing evaluation run '{run_name}' (ID: {eval_run.id})"
+            )
 
         for i, row in rows_to_process:
             q_num = i + 1
@@ -407,9 +416,13 @@ async def main() -> None:
             print("-" * 70)
 
             if interactive:
-                user_choice = input(
-                    f"-> Run question #{q_num}? [Enter]=Run | [s]=Skip | [q]=Quit: "
-                ).strip().lower()
+                user_choice = (
+                    input(
+                        f"-> Run question #{q_num}? [Enter]=Run | [s]=Skip | [q]=Quit: "
+                    )
+                    .strip()
+                    .lower()
+                )
 
                 if user_choice == "q":
                     print("User requested exit. Stopping run...")
@@ -421,7 +434,9 @@ async def main() -> None:
 
             processed_count += 1
             try:
-                print(f"Running inference for question #{q_num} through LangGraph RAG pipeline...")
+                print(
+                    f"Running inference for question #{q_num} through LangGraph RAG pipeline..."
+                )
                 final_answer, contexts = await run_single_inference(
                     question=row.question,
                     tenant_id=TENANT_ID,
@@ -432,6 +447,7 @@ async def main() -> None:
                 sample = RagasEvaluationSample(
                     id=uuid.uuid4(),
                     run_id=eval_run.id,
+                    tenant_id=tenant_uuid,
                     question=row.question,
                     ground_truth=row.ground_truth,
                     contexts=contexts,
@@ -445,9 +461,13 @@ async def main() -> None:
                 db.commit()
                 inserted_count += 1
 
-                print(f"\n[Done #{q_num}] Generated Answer ({len(final_answer)} chars):")
+                print(
+                    f"\n[Done #{q_num}] Generated Answer ({len(final_answer)} chars):"
+                )
                 print(f"{final_answer}")
-                print(f"\nRetrieved {len(contexts)} context chunk(s). Inserted sample into database.")
+                print(
+                    f"\nRetrieved {len(contexts)} context chunk(s). Inserted sample into database."
+                )
 
                 if interactive:
                     input("\nPress [Enter] to continue to the next question...")
