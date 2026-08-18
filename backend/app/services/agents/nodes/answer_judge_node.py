@@ -1,8 +1,9 @@
 import logging
 
-from app.services.agents.ollama_client import OLLAMA_MODEL, get_ollama_client
+# from app.services.agents.ollama_client import OLLAMA_MODEL, get_ollama_client
 from app.services.agents.tools.utils import parse_json
 from app.services.agents.types import AgentState, AnswerJudgeResult
+import app.services.rag_service as rag_service
 
 logger = logging.getLogger(__name__)
 
@@ -73,28 +74,28 @@ async def answer_judge_node(state: AgentState) -> dict:
 
     try:
         # ANTHROPIC - restore when switching back to Claude
-        # client = rag_service._get_async_anthropic_client()
-        # response = await client.messages.create(
-        #     model="claude-haiku-4-5-20251001",
-        #     max_tokens=1024,
-        #     system=system_prompt,
-        #     messages=[{"role": "user", "content": user_prompt}],
-        # )
-        # raw_text = ""
-        # for block in response.content:
-        #     if getattr(block, "type", None) == "text":
-        #         raw_text += block.text
-
-        client = get_ollama_client()
-        response = await client.chat.completions.create(
-            model=OLLAMA_MODEL,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
+        client = rag_service._get_async_anthropic_client()
+        response = await client.messages.create(
+            model="claude-haiku-4-5-20251001",
             max_tokens=1024,
+            system=system_prompt,
+            messages=[{"role": "user", "content": user_prompt}],
         )
-        raw_text = response.choices[0].message.content or ""
+        raw_text = ""
+        for block in response.content:
+            if getattr(block, "type", None) == "text":
+                raw_text += block.text
+
+        # client = get_ollama_client()
+        # response = await client.chat.completions.create(
+        #     model=OLLAMA_MODEL,
+        #     messages=[
+        #         {"role": "system", "content": system_prompt},
+        #         {"role": "user", "content": user_prompt},
+        #     ],
+        #     max_tokens=1024,
+        # )
+        # raw_text = response.choices[0].message.content or ""
 
         print(f"[Answer Judge] Raw LLM response: {raw_text}")
 

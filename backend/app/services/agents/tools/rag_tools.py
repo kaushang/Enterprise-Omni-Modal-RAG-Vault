@@ -15,6 +15,7 @@ from RestrictedPython.Guards import guarded_iter_unpack_sequence
 
 import app.services.rag_service as rag_service
 from app.services import embedding_service
+from app.services.agents.gemini_client import GEMINI_MODEL, get_gemini_client
 
 logger = rag_service.logger
 
@@ -216,7 +217,8 @@ async def evaluate_context_quality_tool(
         }
     else:
         try:
-            client = rag_service._get_async_anthropic_client()
+            # ANTHROPIC - restore when switching back to Claude
+            # client = rag_service._get_async_anthropic_client()
             judge_system = (
                 "You are a retrieval quality evaluator. Given a user query and the retrieved context chunks, "
                 "evaluate whether the retrieved context contains any information that could help answer the query, "
@@ -231,14 +233,24 @@ async def evaluate_context_quality_tool(
             Number of chunks retrieved: {len(qdrant_results)}
             Number of Excel results: 0"""
 
-            response = await client.messages.create(
-                model="claude-haiku-4-5-20251001",
-                max_tokens=256,
-                system=judge_system,
-                messages=[{"role": "user", "content": judge_prompt}],
-            )
+            # response = await client.messages.create(
+            #     model="claude-haiku-4-5-20251001",
+            #     max_tokens=256,
+            #     system=judge_system,
+            #     messages=[{"role": "user", "content": judge_prompt}],
+            # )
+            # text = response.content[0].text.strip()
 
-            text = response.content[0].text.strip()
+            client = get_gemini_client()
+            response = await client.chat.completions.create(
+                model=GEMINI_MODEL,
+                messages=[
+                    {"role": "system", "content": judge_system},
+                    {"role": "user", "content": judge_prompt},
+                ],
+                max_tokens=256,
+            )
+            text = (response.choices[0].message.content or "").strip()
             match = re.search(r"\{.*\}", text, re.DOTALL)
             if match:
                 text = match.group(0)
